@@ -33,7 +33,7 @@ export function getConfig() {
         // Disable analytics to prevent "Failed to fetch" errors in console
         enableAnalytics: false,
       }),
-      injected({ target: "metaMask" }),
+      injected({ target: "braveWallet" }), // Brave Wallet support
     ],
     storage: createStorage({
       storage: cookieStorage,
