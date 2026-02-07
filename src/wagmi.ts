@@ -1,6 +1,6 @@
 import { http, cookieStorage, createConfig, createStorage } from "wagmi";
 import { polygonAmoy } from "wagmi/chains";
-import { injected, metaMask } from "wagmi/connectors";
+import { metaMask } from "wagmi/connectors";
 import { defineChain } from "viem";
 
 // Define local Anvil chain
@@ -33,7 +33,6 @@ export function getConfig() {
         // Disable analytics to prevent "Failed to fetch" errors in console
         enableAnalytics: false,
       }),
-      injected({ target: "braveWallet" }), // Brave Wallet support
     ],
     storage: createStorage({
       storage: cookieStorage,
