@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAccount, useReadContract, useBalance } from "wagmi";
 import { parseEther, formatEther, formatUnits, parseUnits } from "viem";
 import { GAME_TOKEN_ABI, LINK_TOKEN_ABI } from "@/lib/abis";
@@ -22,7 +22,9 @@ export function BuyTokens({ showBalanceOnly = false }: { showBalanceOnly?: boole
     functionName: "balanceOf",
     args: address ? [address] : undefined,
     query: {
-      refetchInterval: 2000, // Refetch every 2 seconds
+      // No polling - only refetch after buy/redeem/game actions
+      refetchInterval: false,
+      staleTime: Infinity,
     },
   });
 
@@ -36,6 +38,18 @@ export function BuyTokens({ showBalanceOnly = false }: { showBalanceOnly?: boole
   const { data: polBalance } = useBalance({
     address: address,
   });
+
+  // Make refetch available globally for game actions (create, split, double)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).refetchTokenBalance = refetchTokenBalance;
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        delete (window as any).refetchTokenBalance;
+      }
+    };
+  }, [refetchTokenBalance]);
 
   const { execute: executeBuy, isPending: isBuying, hash: buyHash, error: buyError } = useGameTransaction({
     gameAddress: GAME_TOKEN_ADDRESS,

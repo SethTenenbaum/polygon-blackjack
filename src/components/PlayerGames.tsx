@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, memo } from "react";
 import { useAccount, useReadContract } from "wagmi";
 import { FACTORY_ABI, GAME_ABI } from "@/lib/abis";
 import { GamePlay } from "./GamePlay";
@@ -34,8 +34,11 @@ export function PlayerGames() {
   }, []);
 
   // Share state and expose globally for CreateGame to use
-  sharedSelectedGame = selectedGame;
-  sharedSetSelectedGame = setSelectedGameWithNotify;
+  // CRITICAL: Put in useEffect to prevent running on every render
+  useEffect(() => {
+    sharedSelectedGame = selectedGame;
+    sharedSetSelectedGame = setSelectedGameWithNotify;
+  }, [selectedGame, setSelectedGameWithNotify]);
   
   // Make setter available globally for CreateGame event watcher
   useEffect(() => {
@@ -49,15 +52,30 @@ export function PlayerGames() {
     };
   }, [setSelectedGameWithNotify]);
 
-  const { data: playerGames, isLoading } = useReadContract({
+  const { data: playerGames, isLoading, refetch: refetchGames } = useReadContract({
     address: FACTORY_ADDRESS,
     abi: FACTORY_ABI,
     functionName: "getPlayerGames",
     args: address ? [address] : undefined,
     query: {
-      refetchInterval: 5000, // Refetch every 5 seconds
+      enabled: !!address,
+      // No polling - only refetch manually when games are created or finished
+      refetchInterval: false,
+      staleTime: Infinity,
     },
   });
+
+  // Make refetch available globally for CreateGame to trigger after game creation
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).refetchPlayerGames = refetchGames;
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        delete (window as any).refetchPlayerGames;
+      }
+    };
+  }, [refetchGames]);
 
   // Reverse the games array to show newest first, then paginate
   // Use useMemo to avoid creating new array reference on every render
@@ -203,6 +221,16 @@ export function SelectedGameDisplay() {
     );
   }
 
+  if (!address || !displayedGame) {
+    return (
+      <div className="card h-full flex items-center justify-center min-h-[400px]">
+        <p className="text-center text-gray-600 dark:text-gray-400">
+          {!address ? "Connect your wallet to play" : "Select a game from the sidebar to view details"}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <GamePlay 
       key={displayedGame} 
@@ -213,7 +241,8 @@ export function SelectedGameDisplay() {
 }
 
 // Game List Item Component - Compact single-line display
-function GameListItem({
+// Memoized to prevent unnecessary re-renders
+const GameListItem = memo(function GameListItem({
   gameAddress,
   isSelected,
   onSelect,
@@ -227,7 +256,10 @@ function GameListItem({
     abi: GAME_ABI,
     functionName: "state",
     query: {
-      refetchInterval: 2000,
+      enabled: true,
+      // DISABLED: No polling in list items - only manual refresh
+      refetchInterval: false,
+      staleTime: Infinity,
     },
   });
 
@@ -263,4 +295,4 @@ function GameListItem({
       </span>
     </div>
   );
-}
+});

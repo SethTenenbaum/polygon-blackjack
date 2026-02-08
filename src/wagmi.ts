@@ -24,13 +24,12 @@ const anvil = defineChain({
 
 export function getConfig() {
   return createConfig({
-    chains: [anvil, polygonAmoy],
+    chains: [polygonAmoy], // REMOVED ANVIL - it was trying to connect to localhost and hanging
     connectors: [
       metaMask({
         dappMetadata: {
           name: "Blackjack on Polygon Amoy",
         },
-        // Disable analytics to prevent "Failed to fetch" errors in console
         enableAnalytics: false,
       }),
     ],
@@ -39,7 +38,6 @@ export function getConfig() {
     }),
     ssr: true,
     transports: {
-      [anvil.id]: http("http://127.0.0.1:8545"),
       [polygonAmoy.id]: http(process.env.NEXT_PUBLIC_RPC_URL || "https://polygon-amoy.g.alchemy.com/v2/N72iogGVN-7pd1OaxcDdh"),
     },
   });

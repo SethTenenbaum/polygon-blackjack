@@ -20,7 +20,7 @@ export function CashOut() {
     args: address ? [address] : undefined,
     query: {
       enabled: isConnected && !!address,
-      refetchInterval: 3000,
+      refetchInterval: 10000,
     },
   });
 

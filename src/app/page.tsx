@@ -14,7 +14,7 @@ export default function Home() {
           <div>
             <h1 className="text-4xl font-bold mb-2">Blackjack on Polygon Amoy</h1>
             <p className="text-gray-600 dark:text-gray-400">
-              Play blackjack with game tokens on the testnet
+              Play blackjack with verifiable randomness on-chain
             </p>
           </div>
           <ConnectWallet />
@@ -22,14 +22,11 @@ export default function Home() {
 
         {/* Main Content */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Sidebar - Token Management, Create Game, & Game List */}
           <div className="lg:col-span-1 space-y-6">
             <BuyTokens />
             <CreateGame />
             <PlayerGames />
           </div>
-
-          {/* Main Area - Selected Game Details */}
           <div className="lg:col-span-2">
             <SelectedGameDisplay />
           </div>

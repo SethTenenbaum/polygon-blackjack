@@ -14,6 +14,7 @@ const EXPECTED_CHAIN_ID = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID || "80002");
 // Import the shared game selector from PlayerGames
 declare global {
   var setSelectedGameGlobal: ((game: `0x${string}` | null) => void) | undefined;
+  var refetchPlayerGames: (() => void) | undefined;
 }
 
 export function CreateGame() {
@@ -30,7 +31,8 @@ export function CreateGame() {
   useEffect(() => {
     if (address && !isCorrectNetwork && switchChain) {
       try {
-        switchChain({ chainId: EXPECTED_CHAIN_ID as 31337 | 80002 });
+        // @ts-ignore - Type assertion needed for dynamic chain ID
+        switchChain({ chainId: EXPECTED_CHAIN_ID });
       } catch (error) {
       }
     }
@@ -99,7 +101,8 @@ export function CreateGame() {
     functionName: "getLiquidityStats",
     chainId: EXPECTED_CHAIN_ID as 31337 | 80002,
     query: {
-      refetchInterval: 3000, // Refetch every 3 seconds to catch game finish updates
+      // Poll every 10 seconds to update max bet when other users create/finish games
+      refetchInterval: 10000,
     },
   });
 
@@ -178,6 +181,11 @@ export function CreateGame() {
             const gameAddress = `0x${gameCreatedLog.data.slice(26, 66)}` as `0x${string}`;
             
             // Verify global setter is available
+            
+            // Refetch player games list to include the new game
+            if (typeof window !== 'undefined' && (window as any).refetchPlayerGames) {
+              (window as any).refetchPlayerGames();
+            }
             
             // Auto-select the newly created game
             if (typeof window !== 'undefined' && (window as any).setSelectedGameGlobal) {

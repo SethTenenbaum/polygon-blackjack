@@ -12,7 +12,17 @@ type Props = {
 
 export function Providers({ children, initialState }: Props) {
   const [config] = useState(() => getConfig());
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        refetchOnWindowFocus: false, // CRITICAL: Prevent refetch storm on window focus
+        refetchOnMount: false, // CRITICAL: Prevent refetch on every mount
+        refetchOnReconnect: false, // CRITICAL: Prevent refetch on reconnect
+        retry: 1, // Only retry once
+        staleTime: 30000, // Cache for 30 seconds
+      },
+    },
+  }));
 
   return (
     <WagmiProvider config={config} initialState={initialState}>
