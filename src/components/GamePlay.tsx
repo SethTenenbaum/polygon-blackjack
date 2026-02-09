@@ -2135,14 +2135,16 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
                 const hasHoleCard = dealerCards.length > 1;
                 
                 if (!hasHoleCard) {
-                  // No hole card yet - show placeholder during player turn
-                  if (state !== GameState.NotStarted && state !== GameState.Finished) {
+                  // No hole card yet - show placeholder (back of card)
+                  // Show during active game states (not NotStarted)
+                  if (state !== GameState.NotStarted) {
                     return <PlayingCard key="dealer-hole-card" cardValue={0} isHidden />;
                   }
                   return null;
                 }
                 
                 // Dealer has hole card
+                // Keep it hidden (show card back) unless explicitly revealed
                 // DON'T fade in because we're replacing a placeholder (that was already visible)
                 // Fade in would cause a blink (opacity goes 0->1)
                 return (
