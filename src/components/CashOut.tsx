@@ -20,7 +20,8 @@ export function CashOut() {
     args: address ? [address] : undefined,
     query: {
       enabled: isConnected && !!address,
-      refetchInterval: 10000,
+      // No polling - user has manual refresh button
+      refetchInterval: false,
     },
   });
 

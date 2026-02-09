@@ -105,6 +105,18 @@ export function BuyTokens({ showBalanceOnly = false }: { showBalanceOnly?: boole
       </div>
       
       <div className="mb-6 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg space-y-3">
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+            💼 Your Balances
+          </span>
+          <button
+            onClick={() => refetchTokenBalance()}
+            className="text-xs px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white rounded transition-colors"
+            title="Refresh balances"
+          >
+            🔄 Refresh
+          </button>
+        </div>
         <div className="flex justify-between items-center">
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
             Your POL Balance:

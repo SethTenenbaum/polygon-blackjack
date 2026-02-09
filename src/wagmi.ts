@@ -23,6 +23,13 @@ const anvil = defineChain({
 });
 
 export function getConfig() {
+  // Check for custom RPC URL in localStorage (client-side only)
+  const customRpc = typeof window !== 'undefined' 
+    ? localStorage.getItem("CUSTOM_RPC_URL") 
+    : null;
+  
+  const rpcUrl = customRpc || process.env.NEXT_PUBLIC_RPC_URL || "https://polygon-amoy.g.alchemy.com/v2/N72iogGVN-7pd1OaxcDdh";
+  
   return createConfig({
     chains: [polygonAmoy], // REMOVED ANVIL - it was trying to connect to localhost and hanging
     connectors: [
@@ -38,7 +45,7 @@ export function getConfig() {
     }),
     ssr: true,
     transports: {
-      [polygonAmoy.id]: http(process.env.NEXT_PUBLIC_RPC_URL || "https://polygon-amoy.g.alchemy.com/v2/N72iogGVN-7pd1OaxcDdh"),
+      [polygonAmoy.id]: http(rpcUrl),
     },
   });
 }

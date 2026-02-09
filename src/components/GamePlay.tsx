@@ -1,8 +1,9 @@
 "use client";
 
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, useWatchContractEvent, usePublicClient } from "wagmi";
+import { useQueryClient } from "@tanstack/react-query";
 import { GAME_ABI, LINK_TOKEN_ABI, FACTORY_ABI, GAME_TOKEN_ABI } from "@/lib/abis";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { PlayingCard } from "./PlayingCard";
 import { useGameTransaction } from "@/hooks/useGameTransaction";
 import { Fireworks } from "./Fireworks";
@@ -31,6 +32,17 @@ enum GameState {
 
 export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   const { address } = useAccount();
+  const queryClient = useQueryClient();
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  
+  // Admin wallet for debug features
+  const ADMIN_ADDRESS = "0xC6d04Dd0433860b99D37C866Ff31853B45E02F1f";
+  const isAdmin = address?.toLowerCase() === ADMIN_ADDRESS.toLowerCase();
+  
+  // Poll counter for admin debugging
+  const [pollCount, setPollCount] = useState(0);
+  const pollCountRef = useRef(0);
+  
   const [placedInsuranceAmount, setPlacedInsuranceAmount] = useState<bigint>(BigInt(0)); // Track actual insurance placed
   const [txError, setTxError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null); // Track action to execute after approval
@@ -87,7 +99,10 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     abi: GAME_ABI,
     functionName: "state",
     query: {
-      refetchInterval: 2000, // Refetch every 2 seconds
+      enabled: !!gameAddress,
+      refetchInterval: false, // DISABLED - only manual refetch
+      gcTime: 0, // Don't cache results
+      staleTime: 0, // Consider data stale immediately
     },
   });
 
@@ -96,7 +111,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     abi: GAME_ABI,
     functionName: "currentHand",
     query: {
-      refetchInterval: 2000,
+      refetchInterval: false,
     },
   });
 
@@ -105,21 +120,23 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     abi: GAME_ABI,
     functionName: "getPlayerHandsLength",
     query: {
-      refetchInterval: 2000,
+      refetchInterval: false,
     },
   });
 
   // Dynamically fetch all player hands
   const numHands = Number(playerHandsLength || 1);
   
-  const { data: playerHand0Cards } = useReadContract({
+  const { data: playerHand0Cards, refetch: refetchHand0Cards } = useReadContract({
     address: gameAddress,
     abi: GAME_ABI,
     functionName: "getPlayerHandCards",
     args: [BigInt(0)],
     query: {
-      refetchInterval: 2000,
+      refetchInterval: false,
       enabled: numHands >= 1,
+      gcTime: 0,
+      staleTime: 0,
     },
   });
 
@@ -129,19 +146,19 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "getPlayerHandBet",
     args: [BigInt(0)],
     query: {
-      refetchInterval: gameState === GameState.Finished ? 1000 : 2000, // Poll faster when finished
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
       enabled: numHands >= 1,
     },
   });
 
   // Hand 1 (only fetch if split occurred)
-  const { data: playerHand1Cards } = useReadContract({
+  const { data: playerHand1Cards, refetch: refetchHand1Cards } = useReadContract({
     address: gameAddress,
     abi: GAME_ABI,
     functionName: "getPlayerHandCards",
     args: [BigInt(1)],
     query: {
-      refetchInterval: 2000,
+      refetchInterval: false,
       enabled: numHands >= 2,
     },
   });
@@ -152,19 +169,19 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "getPlayerHandBet",
     args: [BigInt(1)],
     query: {
-      refetchInterval: gameState === GameState.Finished ? 1000 : 2000, // Poll faster when finished
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
       enabled: numHands >= 2,
     },
   });
 
   // Hand 2 (if double split)
-  const { data: playerHand2Cards } = useReadContract({
+  const { data: playerHand2Cards, refetch: refetchHand2Cards } = useReadContract({
     address: gameAddress,
     abi: GAME_ABI,
     functionName: "getPlayerHandCards",
     args: [BigInt(2)],
     query: {
-      refetchInterval: 2000,
+      refetchInterval: false,
       enabled: numHands >= 3,
     },
   });
@@ -175,24 +192,22 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "getPlayerHandBet",
     args: [BigInt(2)],
     query: {
-      refetchInterval: gameState === GameState.Finished ? 1000 : 2000, // Poll faster when finished
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
       enabled: numHands >= 3,
     },
   });
 
   // Hand 3 (max hands)
-  const { data: playerHand3Cards } = useReadContract({
+  const { data: playerHand3Cards, refetch: refetchHand3Cards } = useReadContract({
     address: gameAddress,
     abi: GAME_ABI,
     functionName: "getPlayerHandCards",
     args: [BigInt(3)],
     query: {
-      refetchInterval: 2000,
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
       enabled: numHands >= 4,
     },
-  })
-
-;
+  });
 
   const { data: playerHand3Bet, refetch: refetchHand3Bet } = useReadContract({
     address: gameAddress,
@@ -200,17 +215,19 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "getPlayerHandBet",
     args: [BigInt(3)],
     query: {
-      refetchInterval: gameState === GameState.Finished ? 1000 : 2000, // Poll faster when finished
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
       enabled: numHands >= 4,
     },
   });
 
-  const { data: dealerCardsData } = useReadContract({
+  const { data: dealerCardsData, refetch: refetchDealerCards } = useReadContract({
     address: gameAddress,
     abi: GAME_ABI,
     functionName: "getDealerCards",
     query: {
-      refetchInterval: 2000,
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
+      gcTime: 0,
+      staleTime: 0,
     },
   });
 
@@ -225,7 +242,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "allowance",
     args: address ? [address, gameAddress] : undefined,
     query: {
-      refetchInterval: 3000,
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
     },
   });
 
@@ -297,7 +314,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "insuranceBet",
     query: {
       enabled: !!gameAddress,
-      refetchInterval: 1000, // Check every second for faster updates
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
     },
   });
 
@@ -310,8 +327,8 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "finalPayout",
     query: {
       enabled: !!gameAddress,
-      refetchInterval: gameState === GameState.Finished ? 500 : 2000, // Very aggressive polling when finished
-      staleTime: 0, // Always consider data stale
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
+      staleTime: gameState === GameState.Finished ? Infinity : 0, // Cache forever when finished
     },
   });
 
@@ -322,7 +339,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     functionName: "allowance",
     args: address ? [address, gameAddress] : undefined,
     query: {
-      refetchInterval: 3000,
+      refetchInterval: false, // DISABLED - only manual refetch to prevent crash
     },
   });
 
@@ -380,10 +397,63 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     return tokenAllowance && tokenAllowance >= amount;
   };
 
+  // Parse game state early (needed for refetchAllGameData)
+  const state = gameState ? Number(gameState) : 0;
+  const currentHand = Number(currentHandIndex || 0);
+  const dealerCardsFromContract = Array.isArray(dealerCardsData) ? dealerCardsData.map(c => BigInt(c)) : [];
+
+  // COMPREHENSIVE REFETCH: Invalidates cache and forces UI update
+  const refetchAllGameData = useCallback(async () => {
+    // Step 1: Invalidate ALL wagmi queries for this game contract
+    // Use a safer predicate that doesn't rely on JSON.stringify (which can't handle BigInt)
+    await queryClient.invalidateQueries({
+      predicate: (query) => {
+        // Check if query key contains the game address (as a string or in any form)
+        const keyStr = String(query.queryKey);
+        return keyStr.toLowerCase().includes(gameAddress.toLowerCase());
+      }
+    });
+    
+    // Step 2: Force refetch all queries
+    await Promise.all([
+      refetch(),
+      refetchHand0Cards(),
+      refetchHand1Cards(),
+      refetchHand2Cards(),
+      refetchHand3Cards(),
+      refetchDealerCards(),
+      refetchHand0Bet(),
+      refetchHand1Bet(),
+      refetchHand2Bet(),
+      refetchHand3Bet(),
+    ]);
+    
+    // Step 3: Force component re-render by updating state
+    setRefreshTrigger(prev => prev + 1);
+  }, [
+    queryClient, 
+    gameAddress,
+    refetch, 
+    refetchHand0Cards, 
+    refetchHand1Cards, 
+    refetchHand2Cards, 
+    refetchHand3Cards, 
+    refetchDealerCards,
+    refetchHand0Bet,
+    refetchHand1Bet,
+    refetchHand2Bet,
+    refetchHand3Bet,
+  ]);
+
   // Transaction handler with gas optimization and simulation
   // Memoize callbacks to prevent execute function from changing on every render
   const onSuccess = useCallback(() => {
-    refetch();
+    // CRITICAL: Use comprehensive refetch after successful transaction
+    // This ensures cards appear after VRF completes and cache is invalidated
+    setTimeout(() => {
+      refetchAllGameData();
+    }, 1000);
+    
     setTxError(null);
     
     // If we just completed a split action, mark the current hand as recently split
@@ -405,7 +475,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     
     setCurrentAction(null); // Clear current action on success
     executingActionRef.current = null; // Clear the ref
-  }, [refetch]);
+  }, [refetchAllGameData]);
 
   const onError = useCallback((err: Error) => {
     setTxError(err.message);
@@ -421,10 +491,59 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     onError,
   });
 
-  // Parse game state early for hooks
-  const state = gameState ? Number(gameState) : 0;
-  const currentHand = Number(currentHandIndex || 0);
-  const dealerCardsFromContract = Array.isArray(dealerCardsData) ? dealerCardsData.map(c => BigInt(c)) : [];
+  // SMART POLLING: Only poll during Dealing state to detect VRF completion
+  // SAFE: Poll every 3 seconds to avoid system crash
+  useEffect(() => {
+    if (state === GameState.Dealing) {
+      console.log("🎲 VRF in progress - starting smart polling...");
+      
+      const interval = setInterval(async () => {
+        console.log("🔄 Polling for VRF completion...");
+        
+        // Increment poll counter for admin
+        if (isAdmin) {
+          pollCountRef.current += 1;
+          setPollCount(pollCountRef.current);
+        }
+        
+        const result = await refetch(); // Refetch game state
+        console.log("🔄 Polling result - new state:", result.data);
+      }, 3000); // Poll every 3 seconds (SAFE)
+      
+      return () => {
+        console.log("✅ VRF complete or state changed - stopping polling");
+        clearInterval(interval);
+      };
+    }
+  }, [state, refetch]);
+  
+  // Track previous state to detect VRF completion
+  const prevDealingState = useRef<GameState | undefined>(undefined);
+  
+  // Separate effect to refetch cards when transitioning OUT of Dealing state
+  useEffect(() => {
+    const wasDealing = prevDealingState.current === GameState.Dealing;
+    const isDealingNow = state === GameState.Dealing;
+    
+    console.log(`🔍 State transition check - wasDealing: ${wasDealing}, isDealingNow: ${isDealingNow}, current state: ${state}`);
+    
+    // If we were in Dealing and now we're not, VRF just completed - refetch ALL card data
+    if (wasDealing && !isDealingNow) {
+      console.log("🃏 VRF completed! Using COMPREHENSIVE REFETCH...");
+      
+      // Use the comprehensive refetch function to ensure UI updates
+      refetchAllGameData();
+      
+      // Also do a second wave refetch after a delay for extra safety
+      setTimeout(() => {
+        console.log("🃏 Second wave comprehensive refetch for safety...");
+        refetchAllGameData();
+      }, 1000);
+    }
+    
+    // Update the ref for next render
+    prevDealingState.current = state;
+  }, [state, refetchAllGameData]);
   
   // Reset dealer hit trigger flag when game state changes
   useEffect(() => {
@@ -442,7 +561,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   
   // Create stable hash of dealer cards for dependency tracking
   const dealerCardsHash = dealerCardsFromContract.length > 0 
-    ? dealerCardsFromContract.map(c => c.toString()).join('-') 
+    ? dealerCardsFromContract.map((c: bigint) => c.toString()).join('-') 
     : '';
   const cachedCardsHash = lastKnownDealerCards.length > 0
     ? lastKnownDealerCards.map(c => c.toString()).join('-')
@@ -507,7 +626,6 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     
     // Case 5: First render with cards from contract
     if (contractCardCount > 0 && cachedCardCount === 0) {
-
       setLastKnownDealerCards(dealerCardsFromContract);
       return;
     }
@@ -655,8 +773,8 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     if (changed) {
       setSeenPlayerCardCounts(newCounts);
     }
-  }, [playerCardCounts[0], playerCardCounts[1], playerCardCounts[2], playerCardCounts[3], 
-      seenPlayerCardCounts[0], seenPlayerCardCounts[1], seenPlayerCardCounts[2], seenPlayerCardCounts[3]]);
+  }, [playerCardCounts[0], playerCardCounts[1], playerCardCounts[2], playerCardCounts[3]]);
+  // CRITICAL: seenPlayerCardCounts removed from deps to prevent infinite loop
 
   // Wrapper to prevent execution if game is finished or in wrong state
   const execute = useCallback((functionName: string, args?: any[], value?: bigint) => {
@@ -785,7 +903,8 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       
       executeAfterRefetch();
     }
-  }, [isTokenApproveSuccess, pendingAction, approvalPhase, execute, refetchTokenAllowance, playerHand0Bet, setTxError]);
+  }, [isTokenApproveSuccess, pendingAction, approvalPhase, execute, playerHand0Bet, setTxError]);
+  // NOTE: refetchTokenAllowance is NOT in deps to avoid infinite loop
 
   // Refetch LINK allowance after successful approval and execute pending action
   useEffect(() => {
@@ -878,7 +997,8 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       
       executeAfterRefetch();
     }
-  }, [isApproveSuccess, pendingAction, approvalPhase, execute, refetchLinkAllowance, linkFeePerAction, setTxError]);
+  }, [isApproveSuccess, pendingAction, approvalPhase, execute, linkFeePerAction, setTxError]);
+  // NOTE: refetchLinkAllowance is NOT in deps to avoid infinite loop
 
   const handleHit = () => {
     // Prevent action if game is finished
@@ -1114,8 +1234,8 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     }
     
     // Clear cached dealer cards and insurance amount when starting a new game
-    if (isNotStarted && lastKnownDealerCards.length > 0) {
-      setLastKnownDealerCards([]);
+    if (isNotStarted) {
+      // Dealer cards reset handled by contract
     }
     
     if (isNotStarted && placedInsuranceAmount > BigInt(0)) {
@@ -1131,7 +1251,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     if ((isDealerTurn || isFinished) && !dealerHoleCardRevealed) {
       setDealerHoleCardRevealed(true);
     }
-  }, [state, dealerHoleCardRevealed, lastKnownDealerCards.length, recentlySplitHand]);
+  }, [state, dealerHoleCardRevealed, dealerCards.length, recentlySplitHand, placedInsuranceAmount]);
 
   // Helper function to calculate dealer score from cards (matches contract CardLogic)
   const calculateDealerScore = (cards: readonly bigint[]): number => {
@@ -1216,11 +1336,26 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     const dealerCards = dealerCardsData as readonly bigint[] | undefined;
     const currentCardCount = dealerCards?.length || 0;
     
+    // CRITICAL: Track previous state to detect when we return from Dealing to DealerTurn
+    // This ensures we reset the action flag even if card count hasn't updated yet
+    const prevStateWasDealing = prevDealingState.current === GameState.Dealing;
+    const nowInDealerTurn = state === GameState.DealerTurn;
+    
     // In DealerTurn state - handle dealer automation
     // IMPORTANT: Reset the action in progress flag when we see NEW cards after VRF
+    // OR when we transition back from Dealing to DealerTurn (VRF completed)
     // This allows the next dealer action to trigger
     let justReceivedNewCards = false;
-    if (dealerActionInProgressRef.current && currentCardCount > lastDealerCardCountRef.current) {
+    
+    // Case 1: We transitioned back from Dealing to DealerTurn (VRF just completed)
+    if (dealerActionInProgressRef.current && prevStateWasDealing && nowInDealerTurn) {
+      console.log("🎯 VRF completed, transitioning from Dealing → DealerTurn - resetting action flag");
+      dealerActionInProgressRef.current = false;
+      justReceivedNewCards = true;
+    }
+    // Case 2: We see new cards (card count increased)
+    else if (dealerActionInProgressRef.current && currentCardCount > lastDealerCardCountRef.current) {
+      console.log("🎯 New cards detected - resetting action flag");
       dealerActionInProgressRef.current = false;
       // DON'T update lastDealerCardCountRef here - let the hit check below handle it
       // This ensures we can detect when dealer needs to hit after continueDealer
@@ -1380,15 +1515,23 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     // ENHANCED: Start contract state polling during dealer turn for more robust automation
     // This complements the card-count based logic by pinging the contract directly
     if (isDealerTurn && !contractStatePollingIntervalRef.current) {
+      console.log("🔄 Starting dealer turn polling...");
       
-      // Poll contract state every 2 seconds during dealer turn
+      // Poll contract state AND dealer cards every 2 seconds during dealer turn
       contractStatePollingIntervalRef.current = setInterval(async () => {
+        console.log("🔄 Dealer turn poll - checking state and cards...");
         
-        // Refetch contract state
-        const { data: freshGameState } = await refetch();
+        // Refetch contract state AND dealer cards
+        const [stateResult, cardsResult] = await Promise.all([
+          refetch(),
+          refetchDealerCards()
+        ]);
+        
+        console.log("🔄 Poll results - state:", stateResult.data, "cards:", cardsResult.data);
         
         // If game has finished, stop polling
-        if (freshGameState === GameState.Finished) {
+        if (stateResult.data === GameState.Finished) {
+          console.log("✅ Game finished - stopping dealer turn polling");
           if (contractStatePollingIntervalRef.current) {
             clearInterval(contractStatePollingIntervalRef.current);
             contractStatePollingIntervalRef.current = null;
@@ -1412,7 +1555,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     };
     
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, isPending, pendingAction, isLINKApproved, dealerCardsData, isDealerHittingFromContract]);
+  }, [state, isPending, pendingAction, isLINKApproved, dealerCardsData, isDealerHittingFromContract, dealerCards.length]);
 
   // NOTE: After the VRF gas limit fix, dealerHit is no longer called automatically.
   // Instead, the player must call continueDealer() after the VRF callback completes
@@ -1480,7 +1623,8 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       setBetDataRefetched(false);
       betDataRetryCount.current = 0; // Also reset retry counter
     }
-  }, [state, numHands, betDataRefetched, gameResult, refetchHand0Bet, refetchHand1Bet, refetchHand2Bet, refetchHand3Bet, refetchFinalPayout]);
+  }, [state, numHands, betDataRefetched, gameResult]);
+  // NOTE: refetch functions NOT in deps to avoid infinite loop - they're stable refs
 
   // Reset gameResult when starting a new game
   // DON'T clear result when transitioning to Finished - let the result calculation handle it
@@ -1727,12 +1871,19 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
         // Hide fireworks after 5 seconds
         const timer = setTimeout(() => setShowFireworks(false), 5000);
         return () => clearTimeout(timer);
-      } else {
-        // Make sure fireworks are hidden if not a win
-        setShowFireworks(false);
       }
     }
   }, [gameResult, state]);
+
+  // Refetch player games list when game finishes (updates sidebar game states)
+  useEffect(() => {
+    if (state === GameState.Finished && gameResult) {
+      // Refetch the player games list to update the game states in the sidebar
+      if (typeof window !== 'undefined' && (window as any).refetchPlayerGames) {
+        (window as any).refetchPlayerGames();
+      }
+    }
+  }, [state, gameResult]);
 
   if (!gameState) {
     return <div className="card">Loading game...</div>;
@@ -1873,6 +2024,15 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
           <div className="text-sm bg-black/30 px-4 py-2 rounded-lg">
             <span className="font-semibold">State:</span> {GameState[state]}
           </div>
+          {/* Admin-only Poll Counter */}
+          {isAdmin && (
+            <div className="text-xs px-3 py-2 rounded-lg bg-purple-600/30 border border-purple-400">
+              <div className="font-semibold">🔍 Debug</div>
+              <div className="text-[10px] text-gray-300">
+                Polls: {pollCount}
+              </div>
+            </div>
+          )}
           {/* LINK Status Indicator */}
           {linkAllowance !== undefined && linkFeePerAction && (
             <div className={`text-xs px-3 py-2 rounded-lg ${
@@ -1923,6 +2083,20 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
                 // EXCEPTION: During initial deal (before VRF completes), show back then flip
                 
                 const isDealDuringGameplay = initialDealerCardCount.current === 0;
+                
+                // CRITICAL: If game is finished, ALWAYS show cards face-up (no animation)
+                // This handles page reloads when game is already complete
+                if (state === GameState.Finished) {
+                  return (
+                    <PlayingCard 
+                      key="dealer-first-card"
+                      cardValue={Number(dealerCards[0])}
+                      isHidden={false}
+                      shouldFlip={false}
+                      shouldFadeIn={false}
+                    />
+                  );
+                }
                 
                 // Determine if this card was already present on page load (should show immediately)
                 // vs. being dealt during gameplay (should animate)

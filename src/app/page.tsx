@@ -4,6 +4,7 @@ import { ConnectWallet } from "@/components/ConnectWallet";
 import { BuyTokens } from "@/components/BuyTokens";
 import { CreateGame } from "@/components/CreateGame";
 import { PlayerGames, SelectedGameDisplay } from "@/components/PlayerGames";
+import { RpcSwitcher } from "@/components/RpcSwitcher";
 
 export default function Home() {
   return (
@@ -23,6 +24,7 @@ export default function Home() {
         {/* Main Content */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 space-y-6">
+            <RpcSwitcher />
             <BuyTokens />
             <CreateGame />
             <PlayerGames />

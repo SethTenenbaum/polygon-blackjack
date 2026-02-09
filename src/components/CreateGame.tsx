@@ -14,7 +14,6 @@ const EXPECTED_CHAIN_ID = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID || "80002");
 // Import the shared game selector from PlayerGames
 declare global {
   var setSelectedGameGlobal: ((game: `0x${string}` | null) => void) | undefined;
-  var refetchPlayerGames: (() => void) | undefined;
 }
 
 export function CreateGame() {
@@ -22,6 +21,8 @@ export function CreateGame() {
   const { switchChain } = useSwitchChain();
   const [betAmount, setBetAmount] = useState("");
   const [needsApproval, setNeedsApproval] = useState(true);
+  const [showRpcSwitcher, setShowRpcSwitcher] = useState(false);
+  const [customRpcUrl, setCustomRpcUrl] = useState("");
   
   const isCorrectNetwork = chain?.id === EXPECTED_CHAIN_ID;
 
@@ -31,8 +32,7 @@ export function CreateGame() {
   useEffect(() => {
     if (address && !isCorrectNetwork && switchChain) {
       try {
-        // @ts-ignore - Type assertion needed for dynamic chain ID
-        switchChain({ chainId: EXPECTED_CHAIN_ID });
+        switchChain({ chainId: EXPECTED_CHAIN_ID as 31337 | 80002 });
       } catch (error) {
       }
     }
@@ -101,8 +101,7 @@ export function CreateGame() {
     functionName: "getLiquidityStats",
     chainId: EXPECTED_CHAIN_ID as 31337 | 80002,
     query: {
-      // Poll every 10 seconds to update max bet when other users create/finish games
-      refetchInterval: 10000,
+      refetchInterval: false, // No polling - manual refresh button available
     },
   });
 
@@ -181,11 +180,6 @@ export function CreateGame() {
             const gameAddress = `0x${gameCreatedLog.data.slice(26, 66)}` as `0x${string}`;
             
             // Verify global setter is available
-            
-            // Refetch player games list to include the new game
-            if (typeof window !== 'undefined' && (window as any).refetchPlayerGames) {
-              (window as any).refetchPlayerGames();
-            }
             
             // Auto-select the newly created game
             if (typeof window !== 'undefined' && (window as any).setSelectedGameGlobal) {
@@ -346,33 +340,45 @@ export function CreateGame() {
         <label className="block text-sm font-medium mb-2">
           Bet Amount (BJT Tokens)
         </label>
-        <input
-          type="number"
-          value={betAmount}
-          onChange={(e) => {
-            const value = e.target.value;
-            setBetAmount(value);
-            // Show warning if exceeds max
-            if (maxBet && value) {
-              try {
-                const betInTokens = parseUnits(value, 18);
-                if (betInTokens > maxBet) {
+        <div className="flex gap-2">
+          <input
+            type="number"
+            value={betAmount}
+            onChange={(e) => {
+              const value = e.target.value;
+              setBetAmount(value);
+              // Show warning if exceeds max
+              if (maxBet && value) {
+                try {
+                  const betInTokens = parseUnits(value, 18);
+                  if (betInTokens > maxBet) {
+                  }
+                } catch (err) {
+                  // Ignore parse errors during typing
                 }
-              } catch (err) {
-                // Ignore parse errors during typing
               }
-            }
-          }}
-          step="10"
-          min={minBet ? formatUnits(minBet, 18) : "10"}
-          max={maxBet ? formatUnits(maxBet, 18) : undefined}
-          className={`w-full px-4 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 ${
-            maxBet && betAmount && parseUnits(betAmount || "0", 18) > maxBet
-              ? "border-red-500 dark:border-red-500"
-              : ""
-          }`}
-          placeholder={maxBet ? formatUnits(maxBet, 18) : "Enter bet amount"}
-        />
+            }}
+            step="10"
+            min={minBet ? formatUnits(minBet, 18) : "10"}
+            max={maxBet ? formatUnits(maxBet, 18) : undefined}
+            className={`flex-1 px-4 py-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 ${
+              maxBet && betAmount && parseUnits(betAmount || "0", 18) > maxBet
+                ? "border-red-500 dark:border-red-500"
+                : ""
+            }`}
+            placeholder={maxBet ? formatUnits(maxBet, 18) : "Enter bet amount"}
+          />
+          <button
+            onClick={() => {
+              refetchLiquidityStats();
+              refetchLiquidity();
+            }}
+            className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors text-sm"
+            title="Refresh liquidity and bet limits"
+          >
+            🔄
+          </button>
+        </div>
         <div className="mt-2 flex justify-between text-xs text-gray-600 dark:text-gray-400">
           <span>
             Min: {minBet ? formatUnits(minBet, 18) : "..."} BJT

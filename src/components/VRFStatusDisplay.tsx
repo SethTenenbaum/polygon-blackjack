@@ -98,12 +98,20 @@ export function VRFStatusDisplay({ gameAddress }: VRFStatusDisplayProps) {
     }
   }, [vrfStatus.timeRemaining, vrfStatus.isWaitingForVRF, hasAttemptedAutoRetry, isRetrying, handleRetry]);
 
-  // Don't show anything if not waiting for VRF
+  // Don't show anything if not waiting for VRF (hide immediately when VRF completes)
+  // This prevents showing "Retrying automatically..." after VRF fulfillment
   if (!vrfStatus.isWaitingForVRF) {
     return null;
   }
 
   const timeRemainingSeconds = Number(vrfStatus.timeRemaining);
+  
+  // Additional check: if countdown is 0 but we're still "waiting", only show if actively retrying
+  // This prevents the brief flash of "Retrying automatically..." after VRF completes
+  if (timeRemainingSeconds === 0 && !isRetrying && !hasAttemptedAutoRetry) {
+    return null;
+  }
+
   const minutes = Math.floor(timeRemainingSeconds / 60);
   const seconds = timeRemainingSeconds % 60;
 
