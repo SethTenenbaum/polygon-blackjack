@@ -1554,8 +1554,11 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       }
     };
     
+    // CRITICAL: Only include state and isPending in dependencies
+    // DO NOT include dealerCardsData or dealerCards.length as they update frequently
+    // and would cause the effect to re-run constantly during polling
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, isPending, pendingAction, isLINKApproved, dealerCardsData, isDealerHittingFromContract, dealerCards.length]);
+  }, [state, isPending, pendingAction, isLINKApproved]);
 
   // NOTE: After the VRF gas limit fix, dealerHit is no longer called automatically.
   // Instead, the player must call continueDealer() after the VRF callback completes
