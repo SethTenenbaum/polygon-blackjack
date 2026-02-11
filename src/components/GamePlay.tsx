@@ -71,6 +71,9 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   // Track the latest isPending state to avoid stale closures in setTimeout callbacks
   const isPendingRef = useRef<boolean>(false);
   
+  // Track if we're currently refetching game data - prevents dealer automation during refetch
+  const isRefetchingRef = useRef<boolean>(false);
+  
   // Track failed dealer actions that need retry
   const [failedDealerAction, setFailedDealerAction] = useState<string | null>(null);
 
@@ -418,6 +421,9 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
 
   // COMPREHENSIVE REFETCH: Invalidates cache and forces UI update
   const refetchAllGameData = useCallback(async () => {
+    // Set refetching flag to prevent dealer automation during refetch
+    isRefetchingRef.current = true;
+    
     // Step 1: Invalidate ALL wagmi queries for this game contract
     // Use a safer predicate that doesn't rely on JSON.stringify (which can't handle BigInt)
     await queryClient.invalidateQueries({
@@ -445,6 +451,11 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     
     // Step 3: Force component re-render by updating state
     setRefreshTrigger(prev => prev + 1);
+    
+    // Clear refetching flag after a delay to ensure state has stabilized
+    setTimeout(() => {
+      isRefetchingRef.current = false;
+    }, 500);
   }, [
     queryClient, 
     gameAddress,
@@ -1590,6 +1601,28 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     const isDealing = state === GameState.Dealing;
     const isFinished = state === GameState.Finished;
     const isPlayerTurn = state === GameState.PlayerTurn;
+    const isInsuranceOffer = state === GameState.InsuranceOffer;
+    
+    // CRITICAL EARLY EXIT: NEVER run dealer automation if not in DealerTurn
+    // This prevents any chance of dealer automation triggering during PlayerTurn or InsuranceOffer
+    if (!isDealerTurn) {
+      // Reset flags when not in dealer turn
+      if (continueDealerTriggeredRef.current || dealerActionInProgressRef.current || waitingForContractStabilizationRef.current) {
+        continueDealerTriggeredRef.current = false;
+        dealerActionInProgressRef.current = false;
+        finalContinueDealerAttemptedRef.current = false;
+        lastDealerCardCountRef.current = 0;
+        waitingForContractStabilizationRef.current = false;
+      }
+      return; // EXIT IMMEDIATELY if not DealerTurn
+    }
+    
+    // CRITICAL: Don't run dealer automation if we're currently refetching data
+    // This prevents automation from triggering with stale/transitioning state during refetch
+    if (isRefetchingRef.current) {
+      console.log("⏸️ Skipping dealer automation - refetch in progress");
+      return;
+    }
     
     // Update the latest state ref so setTimeout callbacks can check current state
     latestGameStateRef.current = state;
@@ -1598,24 +1631,6 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     // CRITICAL: Track previous state to detect when we return from Dealing to DealerTurn
     const prevStateWasDealing = prevDealingState.current === GameState.Dealing;
     const nowInDealerTurn = state === GameState.DealerTurn;
-    
-    // CRITICAL FIX: Reset automation flags when entering PlayerTurn (initial deal complete)
-    // This prevents automation from triggering immediately after VRF completes the initial deal
-    if (isPlayerTurn && continueDealerTriggeredRef.current) {
-      console.log("🔄 Entered PlayerTurn - resetting dealer automation flags to prevent premature trigger");
-      continueDealerTriggeredRef.current = false;
-      dealerActionInProgressRef.current = false;
-      finalContinueDealerAttemptedRef.current = false;
-      lastDealerCardCountRef.current = 0;
-      waitingForContractStabilizationRef.current = false;
-    }
-    
-    // CRITICAL: Aggressively fetch dealer cards when entering DealerTurn
-    // This ensures cards are loaded before automation triggers
-    if (prevStateWasDealing && nowInDealerTurn) {
-      console.log("🃏 Just entered DealerTurn - aggressively fetching dealer cards");
-      refetchDealerCards();
-    }
     
     // CRITICAL: Don't run dealer automation if there's already a transaction pending
     // This prevents spam when multiple state updates happen in quick succession
@@ -1628,35 +1643,11 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       return;
     }
     
-    // CRITICAL: If game is finished, immediately reset all flags and stop automation
-    if (isFinished) {
-      if (continueDealerTriggeredRef.current || dealerActionInProgressRef.current || waitingForContractStabilizationRef.current) {
-        console.log("🛑 Game finished - resetting all dealer automation flags");
-        continueDealerTriggeredRef.current = false;
-        dealerActionInProgressRef.current = false;
-        finalContinueDealerAttemptedRef.current = false;
-        lastDealerCardCountRef.current = 0;
-        waitingForContractStabilizationRef.current = false; // Reset waiting flag
-      }
-      return;
-    }
-    
-    // Reset flags when not in dealer turn
-    if (!isDealerTurn && !isDealing) {
-      if (continueDealerTriggeredRef.current || dealerActionInProgressRef.current || waitingForContractStabilizationRef.current) {
-        continueDealerTriggeredRef.current = false;
-        dealerActionInProgressRef.current = false;
-        finalContinueDealerAttemptedRef.current = false;
-        lastDealerCardCountRef.current = 0;
-        waitingForContractStabilizationRef.current = false; // Reset waiting flag
-      }
-      return;
-    }
-    
-    // If we're in Dealing state, VRF is in progress - wait for it to complete
-    if (isDealing) {
-      // DO NOT reset flags here - wait for state to return to DealerTurn
-      return;
+    // CRITICAL: Aggressively fetch dealer cards when entering DealerTurn
+    // This ensures cards are loaded before automation triggers
+    if (prevStateWasDealing && nowInDealerTurn) {
+      console.log("🃏 Just entered DealerTurn - aggressively fetching dealer cards");
+      refetchDealerCards();
     }
     
     // Get current dealer cards
@@ -1825,9 +1816,10 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     // CRITICAL: Only include state and isPending in dependencies
     // DO NOT include dealerCardsData or dealerCards.length as they update frequently
     // and would cause the effect to re-run constantly during polling
+    // DO NOT include isLINKApproved as it can cause premature dealer automation trigger
     // NOTE: refetchDealerCards is called imperatively inside and doesn't need to be in deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, isPending, pendingAction, isLINKApproved]);
+  }, [state, isPending, pendingAction]);
 
   // RETRY LOGIC: Handle retrying failed dealer actions
   useEffect(() => {
