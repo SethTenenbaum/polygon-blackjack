@@ -428,7 +428,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       }
     });
     
-    // Step 2: Force refetch all queries
+    // Step 2: Force refetch all queries (including token allowance after insurance)
     await Promise.all([
       refetch(),
       refetchHand0Cards(),
@@ -440,6 +440,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       refetchHand1Bet(),
       refetchHand2Bet(),
       refetchHand3Bet(),
+      refetchTokenAllowance(), // CRITICAL: Refetch allowance after insurance/actions
     ]);
     
     // Step 3: Force component re-render by updating state
@@ -457,6 +458,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     refetchHand1Bet,
     refetchHand2Bet,
     refetchHand3Bet,
+    refetchTokenAllowance,
   ]);
 
   // Transaction handler with gas optimization and simulation
@@ -1432,10 +1434,17 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   
   // Manual retry handler for timeout UI
   const handleRetryDealerAction = useCallback(async () => {
+    console.log("🔄🔄🔄 RETRY BUTTON CLICKED - handleRetryDealerAction called");
     console.log("🔄 User manually retrying dealer action after timeout");
     console.log("🔄 Current dealerCardsData (raw from contract):", dealerCardsData);
     console.log("🔄 Current dealerCards (cached/UI):", dealerCards);
     console.log("🔄 Current game state:", state);
+    console.log("🔄 Player hands data:", {
+      hand0: playerHand0Cards,
+      hand1: playerHand1Cards,
+      hand2: playerHand2Cards,
+      hand3: playerHand3Cards
+    });
     
     // CRITICAL: Verify we're actually in DealerTurn state
     if (state !== GameState.DealerTurn) {
@@ -1508,10 +1517,49 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     console.log("🔄 Cards to use for transaction:", cardsToUse);
     console.log("🔄 FORCING transaction attempt - contract will handle actual game state");
     
+    // CRITICAL BUST CHECK: Check if all player hands are busted before taking dealer action
+    // If all hands busted, we should only call continueDealer (which will end the game immediately)
+    const playerHandsForBustCheck = [];
+    if (playerHand0Cards) playerHandsForBustCheck.push({ cards: (playerHand0Cards as readonly number[]).map(c => BigInt(c)) });
+    if (playerHand1Cards) playerHandsForBustCheck.push({ cards: (playerHand1Cards as readonly number[]).map(c => BigInt(c)) });
+    if (playerHand2Cards) playerHandsForBustCheck.push({ cards: (playerHand2Cards as readonly number[]).map(c => BigInt(c)) });
+    if (playerHand3Cards) playerHandsForBustCheck.push({ cards: (playerHand3Cards as readonly number[]).map(c => BigInt(c)) });
+    
+    const allHandsBusted = playerHandsForBustCheck.length > 0 && playerHandsForBustCheck.every(hand => {
+      const score = calculateDealerScore(hand.cards);
+      return score > 21;
+    });
+    
+    console.log("🔄 Player hands bust check:", {
+      numHands: playerHandsForBustCheck.length,
+      allBusted: allHandsBusted,
+      hands: playerHandsForBustCheck.map(h => ({ cards: h.cards.length, score: calculateDealerScore(h.cards) }))
+    });
+    
+    if (allHandsBusted) {
+      console.log("🔄 ALL PLAYER HANDS BUSTED - ending game immediately");
+      
+      // FIXED: When all hands are busted, always call continueDealer
+      // The contract's playDealer() will immediately end the game without requesting VRF
+      // No need to get dealer's hole card - dealer wins automatically
+      console.log("🔄 Calling continueDealer to end game (all hands busted, no dealer cards needed)");
+      execute("continueDealer");
+      return;
+    }
+    
     // Calculate dealer score from available cards (if any)
     // If we have no cards or incomplete cards, default to dealerHit (most common case)
     if (cardsToUse.length < 2) {
       console.log("🔄 Insufficient cards - defaulting to dealerHit, contract will handle it");
+      
+      // CRITICAL FIX: Check if LINK is approved before calling dealerHit
+      if (!isLINKApproved) {
+        console.log("🔄 ERROR: LINK not approved for dealerHit - prompting user");
+        setTxError("Please approve LINK tokens for dealer action");
+        handleApproveLINK("dealerHit");
+        return;
+      }
+      
       execute("dealerHit");
     } else {
       const dealerScore = calculateDealerScore(cardsToUse);
@@ -1520,13 +1568,22 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       // Execute the appropriate action based on score
       if (dealerScore < 17) {
         console.log("🔄 Manual retry: Calling dealerHit");
+        
+        // CRITICAL FIX: Check if LINK is approved before calling dealerHit
+        if (!isLINKApproved) {
+          console.log("🔄 ERROR: LINK not approved for dealerHit - prompting user");
+          setTxError("Please approve LINK tokens for dealer action");
+          handleApproveLINK("dealerHit");
+          return;
+        }
+        
         execute("dealerHit");
       } else {
         console.log("🔄 Manual retry: Calling continueDealer");
         execute("continueDealer");
       }
     }
-  }, [dealerCards, calculateDealerScore, execute, refetchAllGameData, refetchDealerCards, state, setTxError, dealerCardsData, refetch]);
+  }, [dealerCards, calculateDealerScore, execute, refetchAllGameData, refetchDealerCards, state, setTxError, dealerCardsData, refetch, playerHand0Cards, playerHand1Cards, playerHand2Cards, playerHand3Cards]);
   
   useEffect(() => {
     const isDealerTurn = state === GameState.DealerTurn;

@@ -15,13 +15,16 @@ const RPC_PROVIDERS = [
 ];
 
 export function RpcSwitcher() {
-  const { address } = useAccount();
+  const { address, chain } = useAccount();
   const [isOpen, setIsOpen] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const [currentRpc, setCurrentRpc] = useState("");
 
   // Check if current user is admin
   const isAdmin = address?.toLowerCase() === ADMIN_ADDRESS.toLowerCase();
+  
+  // Get expected chain ID from environment
+  const EXPECTED_CHAIN_ID = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID || "80002");
 
   // Get current RPC from env or local storage
   useEffect(() => {
@@ -53,8 +56,8 @@ export function RpcSwitcher() {
     return provider?.name || "Current";
   };
 
-  // Don't show the component if not admin
-  if (!isAdmin) {
+  // Don't show the component if not admin or if on Anvil (local network)
+  if (!isAdmin || EXPECTED_CHAIN_ID === 31337) {
     return null;
   }
 

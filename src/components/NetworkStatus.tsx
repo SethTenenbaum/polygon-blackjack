@@ -64,19 +64,47 @@ export function NetworkStatus() {
 
   // Manual switch handler
   const handleSwitchToAmoy = async () => {
+    const targetChainId = EXPECTED_CHAIN_ID;
+    const chainIdHex = `0x${targetChainId.toString(16)}`;
+    
     if (switchChain) {
       try {
-        await switchChain({ chainId: 80002 });
+        await switchChain({ chainId: targetChainId as any });
         return;
       } catch (e) {
+        console.error("switchChain failed:", e);
       }
     }
 
     const eth = (window as any).ethereum;
     if (eth?.request) {
       try {
-        await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x13882" }] });
-      } catch (err) {
+        await eth.request({ 
+          method: "wallet_switchEthereumChain", 
+          params: [{ chainId: chainIdHex }] 
+        });
+      } catch (switchError: any) {
+        // If network doesn't exist, add it
+        if (switchError.code === 4902 && EXPECTED_CHAIN_ID === 31337) {
+          try {
+            await eth.request({
+              method: "wallet_addEthereumChain",
+              params: [{
+                chainId: chainIdHex,
+                chainName: "Anvil",
+                nativeCurrency: {
+                  name: "Ethereum",
+                  symbol: "ETH",
+                  decimals: 18
+                },
+                rpcUrls: ["http://127.0.0.1:8545"],
+                blockExplorerUrls: null
+              }]
+            });
+          } catch (addError) {
+            console.error("Failed to add network:", addError);
+          }
+        }
       }
     }
   };
