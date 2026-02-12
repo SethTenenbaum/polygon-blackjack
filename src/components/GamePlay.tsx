@@ -39,10 +39,6 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   const ADMIN_ADDRESS = "0xC6d04Dd0433860b99D37C866Ff31853B45E02F1f";
   const isAdmin = address?.toLowerCase() === ADMIN_ADDRESS.toLowerCase();
   
-  // Poll counter for admin debugging
-  const [pollCount, setPollCount] = useState(0);
-  const pollCountRef = useRef(0);
-  
   const [placedInsuranceAmount, setPlacedInsuranceAmount] = useState<bigint>(BigInt(0)); // Track actual insurance placed
   const [txError, setTxError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null); // Track action to execute after approval
@@ -618,12 +614,6 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       
       const interval = setInterval(async () => {
         console.log("🔄 Polling for VRF completion...");
-        
-        // Increment poll counter for admin
-        if (isAdmin) {
-          pollCountRef.current += 1;
-          setPollCount(pollCountRef.current);
-        }
         
         const result = await refetch(); // Refetch game state
         console.log("🔄 Polling result - new state:", result.data);
@@ -2323,15 +2313,6 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
           <div className="text-sm bg-black/30 px-4 py-2 rounded-lg">
             <span className="font-semibold">State:</span> {GameState[state]}
           </div>
-          {/* Admin-only Poll Counter */}
-          {isAdmin && (
-            <div className="text-xs px-3 py-2 rounded-lg bg-purple-600/30 border border-purple-400">
-              <div className="font-semibold">🔍 Debug</div>
-              <div className="text-[10px] text-gray-300">
-                Polls: {pollCount}
-              </div>
-            </div>
-          )}
           {/* LINK Status Indicator */}
           {linkAllowance !== undefined && linkFeePerAction && (
             <div className={`text-xs px-3 py-2 rounded-lg ${
