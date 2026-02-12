@@ -71,8 +71,17 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   // Track the latest isPending state to avoid stale closures in setTimeout callbacks
   const isPendingRef = useRef<boolean>(false);
   
+  // Track the latest dealer cards data to avoid stale closures in setTimeout callbacks
+  const latestDealerCardsRef = useRef<readonly bigint[]>([]);
+  
+  // Track the latest hole card revealed state to avoid stale closures in setTimeout callbacks
+  const latestHoleCardRevealedRef = useRef<boolean>(false);
+  
   // Track if we're currently refetching game data - prevents dealer automation during refetch
   const isRefetchingRef = useRef<boolean>(false);
+  
+  // Track the latest LINK approval state to avoid stale closures in setTimeout callbacks
+  const isLINKApprovedRef = useRef<boolean>(false);
   
   // Track failed dealer actions that need retry
   const [failedDealerAction, setFailedDealerAction] = useState<string | null>(null);
@@ -292,7 +301,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     }
   }, [isApproveError, setTxError]);
 
-  const handleApproveLINK = async (action: string) => {
+  const handleApproveLINK = useCallback(async (action: string) => {
     if (!linkFeePerAction) return;
     try {
       setPendingAction(action); // Store the action to execute after approval
@@ -318,10 +327,13 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       setPendingAction(null);
       setApprovalPhase("none");
     }
-  };
+  }, [linkFeePerAction, approveLINK, gameAddress]);
 
   // Check if LINK is approved for at least one more action
   const isLINKApproved = linkAllowance && linkFeePerAction && linkAllowance >= linkFeePerAction;
+  
+  // Update ref on every render so timer callback has fresh value
+  isLINKApprovedRef.current = !!isLINKApproved;
 
   // Read insurance bet from contract (more reliable than React state)
   // Note: insuranceBet is a public state variable, which auto-generates a getter function
@@ -419,6 +431,13 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   const currentHand = Number(currentHandIndex || 0);
   const dealerCardsFromContract = Array.isArray(dealerCardsData) ? dealerCardsData.map(c => BigInt(c)) : [];
 
+  // CRITICAL: Update refs on every render so setTimeout callbacks have fresh values
+  // This prevents stale closure issues in the dealer automation effect
+  latestGameStateRef.current = state;
+  latestDealerCardsRef.current = (dealerCardsData as readonly bigint[] | undefined) || [];
+  latestHoleCardRevealedRef.current = dealerHoleCardRevealed;
+  // Note: isPendingRef is updated after isPending is declared (see below)
+
   // COMPREHENSIVE REFETCH: Invalidates cache and forces UI update
   const refetchAllGameData = useCallback(async () => {
     // Set refetching flag to prevent dealer automation during refetch
@@ -452,10 +471,12 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     // Step 3: Force component re-render by updating state
     setRefreshTrigger(prev => prev + 1);
     
-    // Clear refetching flag after a delay to ensure state has stabilized
+    // Clear refetching flag after a longer delay to prevent dealer automation
+    // during the refetch window. This is especially important after VRF completion
+    // when we do multiple waves of refetching.
     setTimeout(() => {
       isRefetchingRef.current = false;
-    }, 500);
+    }, 2000); // Extended to 2 seconds to cover multiple refetch waves
   }, [
     queryClient, 
     gameAddress,
@@ -555,6 +576,9 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     onSuccess,
     onError,
   });
+
+  // Update isPending ref on every render (after isPending is declared)
+  isPendingRef.current = isPending;
 
   // SMART POLLING: Only poll during Dealing state to detect VRF completion
   // SAFE: Poll every 3 seconds to avoid system crash
@@ -843,13 +867,19 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
 
   // Wrapper to prevent execution if game is finished or in wrong state
   const execute = useCallback((functionName: string, args?: any[], value?: bigint) => {
+    // CRITICAL FIX: Use latestGameStateRef.current for state checks to avoid stale closure issues
+    // This ensures we always check the CURRENT state, not the state from when execute was created
+    const currentState = latestGameStateRef.current ?? 0;
+    const isDealerAction = functionName === "dealerHit" || functionName === "continueDealer";
+    
+    console.log(`📞 EXECUTE CALLED: ${functionName} - Current state: ${GameState[currentState]} (${currentState}), isPending: ${isPendingRef.current}, dealerActionInProgress: ${dealerActionInProgressRef.current}`);
+    
     // CRITICAL FIX: Always prevent dealer actions if game is finished
     // This prevents contract errors at game end
-    if (state === GameState.Finished) {
-      const isDealerAction = functionName === "dealerHit" || functionName === "continueDealer";
-      
+    if (currentState === GameState.Finished) {
       if (isDealerAction) {
         console.log(`🛑 BLOCKED: Prevented ${functionName} - game is finished`);
+        dealerActionInProgressRef.current = false; // Reset flag
         return;
       }
       
@@ -864,42 +894,58 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     const isPlayerTurnAction = ["hit", "stand", "doubleDown", "split"].includes(functionName);
     const isInsuranceAction = functionName === "placeInsurance" || functionName === "skipInsurance";
     const isSurrender = functionName === "surrender";
-    const isDealerAction = functionName === "dealerHit" || functionName === "continueDealer";
     
-    if (isPlayerTurnAction && state !== GameState.PlayerTurn) {
-      setTxError(`Cannot ${functionName} - game state changed to ${GameState[state]}. Please wait for your turn.`);
+    if (isPlayerTurnAction && currentState !== GameState.PlayerTurn) {
+      console.log(`🛑 BLOCKED: Prevented ${functionName} - not in PlayerTurn (current: ${GameState[currentState]})`);
+      setTxError(`Cannot ${functionName} - game state changed to ${GameState[currentState]}. Please wait for your turn.`);
       return;
     }
     
-    if (isInsuranceAction && state !== GameState.InsuranceOffer) {
-      setTxError(`Cannot perform insurance action - game state changed to ${GameState[state]}.`);
+    if (isInsuranceAction && currentState !== GameState.InsuranceOffer) {
+      console.log(`🛑 BLOCKED: Prevented ${functionName} - not in InsuranceOffer (current: ${GameState[currentState]})`);
+      setTxError(`Cannot perform insurance action - game state changed to ${GameState[currentState]}.`);
       return;
     }
     
-    if (isSurrender && state !== GameState.PlayerTurn && state !== GameState.InsuranceOffer) {
-      setTxError(`Cannot surrender - game state changed to ${GameState[state]}.`);
+    if (isSurrender && currentState !== GameState.PlayerTurn && currentState !== GameState.InsuranceOffer) {
+      console.log(`🛑 BLOCKED: Prevented ${functionName} - not in PlayerTurn or InsuranceOffer (current: ${GameState[currentState]})`);
+      setTxError(`Cannot surrender - game state changed to ${GameState[currentState]}.`);
       return;
     }
     
     // CRITICAL: Dealer actions can ONLY run in DealerTurn state
-    if (isDealerAction && state !== GameState.DealerTurn) {
-      console.log(`🛑 BLOCKED: Prevented ${functionName} - not in DealerTurn (current: ${GameState[state]})`);
+    if (isDealerAction && currentState !== GameState.DealerTurn) {
+      console.log(`🛑 BLOCKED: Prevented ${functionName} - not in DealerTurn (current: ${GameState[currentState]})`);
+      // Reset the action in progress flag since we're blocking the action
+      dealerActionInProgressRef.current = false;
       return;
     }
     
     // CRITICAL: Also prevent dealer actions if we're in Dealing state (VRF in progress)
     // This prevents the race condition where we call a dealer action, it transitions to Dealing,
     // but the frontend state hasn't updated yet and tries to call again
-    if (isDealerAction && state === GameState.Dealing) {
+    if (isDealerAction && currentState === GameState.Dealing) {
       console.log(`🛑 BLOCKED: Prevented ${functionName} - VRF in progress (Dealing state)`);
+      // Reset the action in progress flag since we're blocking the action
+      dealerActionInProgressRef.current = false;
       return;
     }
+    
+    // CRITICAL: EXTRA SAFETY CHECK - Block dealer actions if we're in PlayerTurn or InsuranceOffer
+    // This should never happen due to earlier checks, but adds defense in depth
+    if (isDealerAction && (currentState === GameState.PlayerTurn || currentState === GameState.InsuranceOffer)) {
+      console.log(`🛑🛑🛑 CRITICAL BLOCK: Prevented ${functionName} - state is ${GameState[currentState]} (this should never happen!)`);
+      dealerActionInProgressRef.current = false;
+      return;
+    }
+    
+    console.log(`✅ EXECUTE APPROVED: ${functionName} - State check passed, executing transaction`);
     
     // Set current action before executing (both in state and ref)
     setCurrentAction(functionName);
     executingActionRef.current = functionName;
     executeRaw(functionName, args, value);
-  }, [state, executeRaw, setTxError]);
+  }, [executeRaw, setTxError]); // REMOVED isPending and pendingAction - they're only used for logging
 
   // Refetch token allowance after successful approval and execute pending action
   useEffect(() => {
@@ -1024,6 +1070,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
               const isPlayerTurnAction = ["doubleDown", "split", "hit", "stand"].includes(pendingAction);
               const isInsuranceAction = pendingAction === "placeInsurance";
               const isSurrender = pendingAction === "surrender";
+              const isDealerAction = pendingAction === "dealerHit" || pendingAction === "continueDealer";
               
               if (isPlayerTurnAction && currentState !== GameState.PlayerTurn) {
                 setTxError(`Cannot ${pendingAction}: game state changed. Please try again if still in player's turn.`);
@@ -1043,6 +1090,14 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
                 setTxError(`Cannot surrender: game state changed.`);
                 setPendingAction(null);
                 setApprovalPhase("none");
+                return;
+              }
+              
+              if (isDealerAction && currentState !== GameState.DealerTurn) {
+                console.log(`⚠️ LINK approval complete but no longer in DealerTurn - aborting ${pendingAction}`);
+                setPendingAction(null);
+                setApprovalPhase("none");
+                dealerActionInProgressRef.current = false;
                 return;
               }
               
@@ -1329,7 +1384,8 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   }, [state, dealerHoleCardRevealed, dealerCards.length, recentlySplitHand, placedInsuranceAmount]);
 
   // Helper function to calculate dealer score from cards (matches contract CardLogic)
-  const calculateDealerScore = (cards: readonly bigint[]): number => {
+  // CRITICAL: Memoized with useCallback to prevent effect re-runs
+  const calculateDealerScore = useCallback((cards: readonly bigint[]): number => {
     if (!cards || cards.length === 0) return 0;
     
     let score = 0;
@@ -1361,7 +1417,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     }
     
     return score;
-  };
+  }, []); // No dependencies - pure calculation function
 
   // Auto-trigger dealer actions by polling contract state (not relying on events!)
   // This is more reliable than event-based automation
@@ -1371,6 +1427,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   const lastDealerCardCountRef = useRef(0);
   const contractStatePollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const waitingForContractStabilizationRef = useRef(false); // NEW: Track if we're waiting for the 1.5s delay
+  const hasInitiallyFetchedCardsRef = useRef(false); // Track if we've fetched cards on page load in DealerTurn
   
   const dealerAutomationStateRef = useRef<{
     lastAttemptTime: number;
@@ -1387,37 +1444,31 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   });
   
   // State for timeout UI - show manual retry button if dealer is stuck
-  const [dealerTimeoutOccurred, setDealerTimeoutOccurred] = useState(false);
   const [secondsWaiting, setSecondsWaiting] = useState(0);
   
-  // TIMEOUT DETECTION: Monitor how long we've been in DealerTurn and show retry UI
+  // UI COUNTDOWN TIMER: Track how long we've been in DealerTurn for the countdown/retry UI
   useEffect(() => {
     const isDealerTurn = state === GameState.DealerTurn;
     
     if (!isDealerTurn) {
-      // Reset timer and timeout state when leaving DealerTurn
+      // Reset timer when leaving DealerTurn
       dealerAutomationStateRef.current.stateEnteredAt = 0;
-      setDealerTimeoutOccurred(false);
       setSecondsWaiting(0);
       return;
     }
     
-    // Don't track time if transaction is pending
+    // Don't update counter if transaction is pending
     if (isPending || pendingAction) {
       return;
     }
     
     // Record when we first entered DealerTurn state
-    // Start timer immediately, even if cards aren't ready yet
-    // This handles the case where cards fail to load
     if (dealerAutomationStateRef.current.stateEnteredAt === 0) {
-      console.log("⏰ Starting dealer turn timer - will show timeout UI after 10 seconds");
       dealerAutomationStateRef.current.stateEnteredAt = Date.now();
       setSecondsWaiting(0);
-      setDealerTimeoutOccurred(false);
     }
     
-    // Update seconds counter every second
+    // Update seconds counter every second for the UI
     const counterInterval = setInterval(() => {
       if (dealerAutomationStateRef.current.stateEnteredAt > 0) {
         const elapsed = Math.floor((Date.now() - dealerAutomationStateRef.current.stateEnteredAt) / 1000);
@@ -1425,23 +1476,11 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       }
     }, 1000);
     
-    // Set up a timeout timer (5 seconds) to show the retry UI
-    const timeoutTimer = setTimeout(() => {
-      // Double-check state hasn't changed
-      const currentState = gameState ? Number(gameState) : 0;
-      console.log(`⏰ Timeout check - currentState: ${currentState}, DealerTurn: ${GameState.DealerTurn}, isPending: ${isPending}, pendingAction: ${pendingAction}`);
-      if (currentState === GameState.DealerTurn && !isPending && !pendingAction) {
-        console.log("⏰ TIMEOUT: Dealer action took too long - showing manual retry UI");
-        setDealerTimeoutOccurred(true);
-      }
-    }, 5000); // 5 second timeout before showing retry UI (reduced from 10 for faster UX)
-    
-    // Cleanup timers on unmount or state change
+    // Cleanup timer on unmount or state change
     return () => {
       clearInterval(counterInterval);
-      clearTimeout(timeoutTimer);
     };
-  }, [state, isPending, pendingAction, dealerCardsData, gameState]);
+  }, [state, isPending, pendingAction]);
   
   // Manual retry handler for timeout UI
   const handleRetryDealerAction = useCallback(async () => {
@@ -1465,7 +1504,6 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     }
     
     // Reset timeout state
-    setDealerTimeoutOccurred(false);
     dealerAutomationStateRef.current.stateEnteredAt = Date.now(); // Reset timer
     setSecondsWaiting(0);
     
@@ -1594,232 +1632,126 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
         execute("continueDealer");
       }
     }
-  }, [dealerCards, calculateDealerScore, execute, refetchAllGameData, refetchDealerCards, state, setTxError, dealerCardsData, refetch, playerHand0Cards, playerHand1Cards, playerHand2Cards, playerHand3Cards]);
+  }, [dealerCards, calculateDealerScore, execute, refetchAllGameData, refetchDealerCards, state, setTxError, dealerCardsData, refetch, playerHand0Cards, playerHand1Cards, playerHand2Cards, playerHand3Cards, isLINKApproved, handleApproveLINK]);
   
+  // SIMPLIFIED DEALER AUTOMATION EFFECT
+  // This effect ONLY runs when UI is in "Dealer's Turn" state
+  // It triggers the appropriate dealer action based on dealer cards:
+  // - If hole card not revealed: call continueDealer() to reveal it
+  // - If dealer score < 17: call dealerHit()
+  // - If dealer score >= 17: call continueDealer() to finalize
+  //
+  // FALLBACK: After 3 seconds in DealerTurn with no pending transaction,
+  // automatically trigger the appropriate dealer action
   useEffect(() => {
-    const isDealerTurn = state === GameState.DealerTurn;
-    const isDealing = state === GameState.Dealing;
-    const isFinished = state === GameState.Finished;
-    const isPlayerTurn = state === GameState.PlayerTurn;
-    const isInsuranceOffer = state === GameState.InsuranceOffer;
+    console.log(`🎬 DEALER AUTOMATION EFFECT TRIGGERED - state: ${state}`);
     
-    // CRITICAL EARLY EXIT: NEVER run dealer automation if not in DealerTurn
-    // This prevents any chance of dealer automation triggering during PlayerTurn or InsuranceOffer
-    if (!isDealerTurn) {
-      // Reset flags when not in dealer turn
-      if (continueDealerTriggeredRef.current || dealerActionInProgressRef.current || waitingForContractStabilizationRef.current) {
-        continueDealerTriggeredRef.current = false;
+    // CRITICAL: ONLY run automation when UI is showing "Dealer's Turn"
+    if (state !== GameState.DealerTurn) {
+      // Reset all flags when leaving DealerTurn
+      if (dealerActionInProgressRef.current) {
+        console.log("🔄 Left DealerTurn - resetting all dealer automation flags");
         dealerActionInProgressRef.current = false;
+        continueDealerTriggeredRef.current = false;
         finalContinueDealerAttemptedRef.current = false;
         lastDealerCardCountRef.current = 0;
-        waitingForContractStabilizationRef.current = false;
       }
-      return; // EXIT IMMEDIATELY if not DealerTurn
-    }
-    
-    // CRITICAL: Don't run dealer automation if we're currently refetching data
-    // This prevents automation from triggering with stale/transitioning state during refetch
-    if (isRefetchingRef.current) {
-      console.log("⏸️ Skipping dealer automation - refetch in progress");
       return;
     }
     
-    // Update the latest state ref so setTimeout callbacks can check current state
+    // Update refs so setTimeout callback can access latest values
     latestGameStateRef.current = state;
-    isPendingRef.current = isPending;
     
-    // CRITICAL: Track previous state to detect when we return from Dealing to DealerTurn
-    const prevStateWasDealing = prevDealingState.current === GameState.Dealing;
-    const nowInDealerTurn = state === GameState.DealerTurn;
+    console.log("⏰ Setting 3-second fallback timer for dealer automation (SINGLE TIMER ON STATE ENTRY)");
     
-    // CRITICAL: Don't run dealer automation if there's already a transaction pending
-    // This prevents spam when multiple state updates happen in quick succession
-    if (isPending) {
-      return;
-    }
+    // CAPTURE these values at the time the effect runs so they're available in the timeout callback
+    // This is safe because the timeout is only 3 seconds and these shouldn't change during DealerTurn
+    const capturedExecute = execute;
+    const capturedHandleApproveLINK = handleApproveLINK;
+    const capturedIsLINKApproved = isLINKApproved;
+    const capturedCalculateDealerScore = calculateDealerScore;
     
-    // CRITICAL: Don't run dealer automation if there's a pending action (approval flow in progress)
-    if (pendingAction) {
-      return;
-    }
-    
-    // CRITICAL: Aggressively fetch dealer cards when entering DealerTurn
-    // This ensures cards are loaded before automation triggers
-    if (prevStateWasDealing && nowInDealerTurn) {
-      console.log("🃏 Just entered DealerTurn - aggressively fetching dealer cards");
-      refetchDealerCards();
-    }
-    
-    // Get current dealer cards
-    const dealerCards = dealerCardsData as readonly bigint[] | undefined;
-    const currentCardCount = dealerCards?.length || 0;
-    
-    // In DealerTurn state - handle dealer automation
-    // IMPORTANT: Reset the action in progress flag when we see NEW cards after VRF
-    // OR when we transition back from Dealing to DealerTurn (VRF completed)
-    // This allows the next dealer action to trigger
-    let justReceivedNewCards = false;
-    
-    // Case 1: We transitioned back from Dealing to DealerTurn (VRF just completed)
-    if (dealerActionInProgressRef.current && prevStateWasDealing && nowInDealerTurn) {
-      console.log("🎯 VRF completed, transitioning from Dealing → DealerTurn - resetting action flag");
-      dealerActionInProgressRef.current = false;
-      justReceivedNewCards = true;
-    }
-    // Case 2: We see new cards (card count increased)
-    else if (dealerActionInProgressRef.current && currentCardCount > lastDealerCardCountRef.current) {
-      console.log("🎯 New cards detected - resetting action flag");
-      dealerActionInProgressRef.current = false;
-      // DON'T update lastDealerCardCountRef here - let the hit check below handle it
-      // This ensures we can detect when dealer needs to hit after continueDealer
-      justReceivedNewCards = true;
-    }
-    
-    // CRITICAL FIX: If continueDealer was called but card count hasn't changed (because it just reveals the hole card),
-    // and we're not in a pending state, reset the action in progress flag
-    // This happens after initial continueDealer which reveals the hole card but doesn't add cards
-    if (dealerActionInProgressRef.current && 
-        continueDealerTriggeredRef.current && 
-        currentCardCount === 2 && 
-        lastDealerCardCountRef.current === 0 && 
-        !isPending && 
-        !pendingAction) {
-      dealerActionInProgressRef.current = false;
-      // DON'T update lastDealerCardCountRef yet - leave it at 0 so the dealer hit check sees 2 > 0
-      // The dealer hit check below will update it when it triggers dealerHit
-      justReceivedNewCards = true; // Allow the dealer hit check to run
-    }
-    
-    // Don't trigger if already in progress or if there's a pending action
-    // BUT: if we just received new cards, we should continue to check if dealer needs to hit
-    if (!justReceivedNewCards && (dealerActionInProgressRef.current || isPending || pendingAction)) {
-      return;
-    }
-    
-    // DEALER AUTOMATION: Attempt automatic dealer actions
-    // If this fails or times out, the retry button will be available as backup
-    
-    // CRITICAL: Only run automation if we're actually in DealerTurn state
-    // Do NOT run if we're in PlayerTurn (player still making decisions)
-    if (!isDealerTurn) {
-      console.log("⏸️ Not in DealerTurn state - skipping dealer automation");
-      return;
-    }
-    
-    // Get valid dealer cards (handle undefined case)
-    const validDealerCards = dealerCards || [];
-    const dealerScore = calculateDealerScore(validDealerCards);
-    const cardCount = validDealerCards.length;
-    
-    console.log(`🤖 Dealer automation check - cards: ${cardCount}, score: ${dealerScore}, continueCalled: ${continueDealerTriggeredRef.current}`);
-    
-    // CRITICAL: After VRF completes and we transition to DealerTurn, wait 1.5s before triggering any actions
-    // This gives the contract time to stabilize and ensures we don't trigger actions prematurely
-    if (prevStateWasDealing && nowInDealerTurn && !waitingForContractStabilizationRef.current && !continueDealerTriggeredRef.current) {
-      console.log("⏳ Just transitioned from Dealing → DealerTurn - waiting 1.5s for contract stabilization");
-      waitingForContractStabilizationRef.current = true;
+    const fallbackTimer = setTimeout(() => {
+      console.log("⏰⏰⏰ TIMER FIRED - Checking conditions...");
+      console.log(`⏰ Timer check - state: ${latestGameStateRef.current}, isPending: ${isPendingRef.current}, actionInProgress: ${dealerActionInProgressRef.current}, isRefetching: ${isRefetchingRef.current}`);
       
-      setTimeout(() => {
-        console.log("✅ Contract stabilization delay complete - dealer automation can now proceed");
-        waitingForContractStabilizationRef.current = false;
-        
-        // Force a state update to trigger the automation logic
-        refetch();
-      }, 1500); // 1.5 second delay
-      
-      return; // Exit early, will re-run after timeout
-    }
-    
-    // CRITICAL: Don't proceed if we're waiting for contract to stabilize
-    if (waitingForContractStabilizationRef.current) {
-      console.log("⏸️ Waiting for contract stabilization (1.5s delay)...");
-      return;
-    }
-    
-    // FIRST PRIORITY: Call continueDealer() once at the start of dealer turn
-    // This reveals the hole card and checks if dealer needs to hit
-    if (!continueDealerTriggeredRef.current && cardCount >= 2) {
-      console.log("🎯 AUTO: Calling continueDealer (first time in dealer turn)");
-      continueDealerTriggeredRef.current = true;
-      dealerActionInProgressRef.current = true;
-      lastDealerCardCountRef.current = cardCount;
-      
-      // CRITICAL: Set the waiting flag to prevent immediate retry
-      waitingForContractStabilizationRef.current = true;
-      
-      // Clear the waiting flag after 1.5 seconds
-      setTimeout(() => {
-        console.log("✅ Contract stabilization period complete - ready for next action");
-        waitingForContractStabilizationRef.current = false;
-      }, 1500);
-      
-      execute("continueDealer");
-      return;
-    }
-    
-    // SECOND PRIORITY: If dealer score < 17 AND we have new cards, call dealerHit
-    // Only proceed if we're not waiting for VRF and we have valid cards
-    if (continueDealerTriggeredRef.current && dealerScore < 17 && cardCount > lastDealerCardCountRef.current) {
-      console.log(`🎯 AUTO: Dealer score ${dealerScore} < 17 and new cards received - calling dealerHit`);
-      dealerActionInProgressRef.current = true;
-      lastDealerCardCountRef.current = cardCount;
-      
-      // CRITICAL: Set the waiting flag to prevent immediate retry
-      waitingForContractStabilizationRef.current = true;
-      
-      // Clear the waiting flag after 1.5 seconds
-      setTimeout(() => {
-        console.log("✅ Contract stabilization period complete - ready for next action");
-        waitingForContractStabilizationRef.current = false;
-      }, 1500);
-      
-      execute("dealerHit");
-      return;
-    }
-    
-    // THIRD PRIORITY: If dealer score >= 17 and continueDealer was called, call continueDealer again
-    // This finalizes the dealer's turn
-    if (continueDealerTriggeredRef.current && dealerScore >= 17 && !finalContinueDealerAttemptedRef.current && cardCount >= 2) {
-      console.log(`🎯 AUTO: Dealer score ${dealerScore} >= 17 - calling final continueDealer`);
-      finalContinueDealerAttemptedRef.current = true;
-      dealerActionInProgressRef.current = true;
-      
-      // CRITICAL: Set the waiting flag to prevent immediate retry
-      waitingForContractStabilizationRef.current = true;
-      
-      // Clear the waiting flag after 1.5 seconds
-      setTimeout(() => {
-        console.log("✅ Contract stabilization period complete - ready for next action");
-        waitingForContractStabilizationRef.current = false;
-      }, 1500);
-      
-      execute("continueDealer");
-      return;
-    }
-    
-    // ENHANCED: Start contract state polling during dealer turn for more robust automation
-    
-    // Cleanup: Stop polling when leaving dealer turn or component unmounts
-    if (!isDealerTurn && contractStatePollingIntervalRef.current) {
-      clearInterval(contractStatePollingIntervalRef.current as any);
-      contractStatePollingIntervalRef.current = null;
-    }
-    
-    // Cleanup function
-    return () => {
-      if (contractStatePollingIntervalRef.current) {
-        clearInterval(contractStatePollingIntervalRef.current as any);
-        contractStatePollingIntervalRef.current = null;
+      // Check if we're still in DealerTurn
+      if (latestGameStateRef.current !== GameState.DealerTurn) {
+        console.log("⏸️ Fallback automation cancelled - no longer in DealerTurn");
+        return;
       }
+      
+      // REMOVED: isRefetchingRef check - it was blocking dealer automation!
+      // The refetch after VRF completion takes 2 seconds, which extends past our 3-second timer
+      // We don't need to wait for refetch to complete - the dealer action will trigger based on
+      // whatever data we have, and the contract is the source of truth anyway.
+      
+      // Check if transaction is already pending
+      if (isPendingRef.current) {
+        console.log("⏸️ Fallback automation cancelled - transaction already pending");
+        return;
+      }
+      
+      // CRITICAL FIX: Don't check dealerActionInProgressRef here!
+      // This ref can get stuck if a previous attempt failed before calling executeRaw
+      // Instead, we'll let the execute function handle duplicate prevention
+      
+      console.log("⏰ FALLBACK AUTOMATION TRIGGERED (3 seconds elapsed)");
+      
+      // Mark action as in progress AFTER checks pass
+      dealerActionInProgressRef.current = true;
+      
+      // CRITICAL: Get FRESH dealer cards data from refs
+      // Refs are updated on every render, so we always have the latest values
+      const freshDealerCards = latestDealerCardsRef.current;
+      const freshDealerScore = capturedCalculateDealerScore(freshDealerCards);
+      const freshHoleCardRevealed = latestHoleCardRevealedRef.current;
+      
+      console.log(`🤖 Fallback dealer state - cards: ${freshDealerCards.length}, score: ${freshDealerScore}, holeCardRevealed: ${freshHoleCardRevealed}`);
+      console.log(`🤖 Captured values - isLINKApproved: ${capturedIsLINKApproved}`);
+      
+      // Determine which action to take
+      if (freshDealerCards.length < 2) {
+        console.log("⏰ Fallback: No cards loaded - calling continueDealer");
+        capturedExecute("continueDealer");
+      } else if (!freshHoleCardRevealed) {
+        console.log("⏰ Fallback: Hole card not revealed - calling continueDealer");
+        capturedExecute("continueDealer");
+      } else if (freshDealerScore < 17) {
+        console.log(`⏰ Fallback: Dealer score ${freshDealerScore} < 17 - calling dealerHit`);
+        if (!capturedIsLINKApproved) {
+          console.log("⚠️ Fallback: LINK not approved - triggering approval flow");
+          capturedHandleApproveLINK("dealerHit");
+          dealerActionInProgressRef.current = false; // Reset since we're not executing
+          return;
+        }
+        capturedExecute("dealerHit");
+      } else {
+        console.log(`⏰ Fallback: Dealer score ${freshDealerScore} >= 17 - calling continueDealer`);
+        capturedExecute("continueDealer");
+      }
+    }, 3000); // 3 second fallback
+    
+    // Cleanup timer when effect re-runs or component unmounts
+    return () => {
+      console.log("🧹 Cleaning up fallback timer - effect is re-running or component unmounting");
+      clearTimeout(fallbackTimer);
     };
     
-    // CRITICAL: Only include state and isPending in dependencies
-    // DO NOT include dealerCardsData or dealerCards.length as they update frequently
-    // and would cause the effect to re-run constantly during polling
-    // DO NOT include isLINKApproved as it can cause premature dealer automation trigger
-    // NOTE: refetchDealerCards is called imperatively inside and doesn't need to be in deps
+    // CRITICAL FIX FOR PHANTOM TRANSACTIONS:
+    // ONLY depend on state - nothing else!
+    // This ensures the effect runs ONCE when entering DealerTurn and sets a single timer.
+    // We capture execute, handleApproveLINK, etc. as local variables so they're available
+    // in the timeout callback, but we don't add them to dependencies.
+    // 
+    // WHY THIS WORKS:
+    // - Effect runs ONCE when state becomes DealerTurn
+    // - Captures current values of execute, isLINKApproved, etc.
+    // - Timer callback uses captured values (stable for 3 seconds)
+    // - Refs provide fresh values for cards, isPending, etc.
+    // - No re-runs = no phantom transactions
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, isPending, pendingAction]);
+  }, [state]); // ONLY state - nothing else!
 
   // RETRY LOGIC: Handle retrying failed dealer actions
   useEffect(() => {
@@ -2705,14 +2637,29 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
               </p>
               <VRFStatusDisplay gameAddress={gameAddress} />
               
-              {/* Timeout UI - show manual retry if dealer is stuck */}
-              {dealerTimeoutOccurred && (
-                <div className="mt-4 p-4 bg-red-600/30 border-2 border-red-400 rounded-lg">
-                  <p className="text-lg font-semibold text-red-200 mb-2">
+              {/* Show processing message while waiting for automation */}
+              {secondsWaiting > 0 && secondsWaiting < 5 && (
+                <div className="mt-4 p-4 bg-blue-600/30 border-2 border-blue-400 rounded-lg">
+                  <p className="text-lg font-semibold text-blue-200 mb-2">
+                    🎲 Processing dealer action...
+                  </p>
+                  <p className="text-sm text-gray-300">
+                    {secondsWaiting < 3 
+                      ? `Will auto-trigger in ${3 - secondsWaiting} second${3 - secondsWaiting !== 1 ? 's' : ''}...`
+                      : 'Transaction should start any moment...'
+                    }
+                  </p>
+                </div>
+              )}
+              
+              {/* Show manual retry after 5 seconds (in case fallback automation failed) */}
+              {secondsWaiting >= 5 && (
+                <div className="mt-4 p-4 bg-yellow-600/30 border-2 border-yellow-400 rounded-lg">
+                  <p className="text-lg font-semibold text-yellow-200 mb-2">
                     ⚠️ Dealer action delayed
                   </p>
                   <p className="text-sm text-gray-300 mb-3">
-                    Waiting for {secondsWaiting} seconds. The dealer may be stuck.
+                    Waiting for {secondsWaiting} seconds. You can manually trigger the action:
                   </p>
                   <button
                     onClick={handleRetryDealerAction}
