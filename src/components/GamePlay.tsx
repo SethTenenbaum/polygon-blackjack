@@ -58,6 +58,24 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   // Track if we've already triggered dealer hit for current dealer turn to prevent duplicate calls
   const dealerHitTriggeredRef = useRef(false);
   
+  // Track if we've already triggered ANY dealer automation action for this DealerTurn session
+  // This prevents multiple automation attempts (timer-based or manual) within the same dealer turn
+  const dealerAutomationTriggeredRef = useRef(false);
+  
+  // Track which DealerTurn session we're in to prevent effect from running multiple times
+  // This is different from dealerAutomationTriggeredRef - this tracks whether we've SET UP
+  // the timer for this session, not whether we've triggered an action
+  const dealerTurnSessionIdRef = useRef<number>(0);
+  
+  // Track the PREVIOUS game state from the PREVIOUS render to detect state changes
+  // This is separate from latestGameStateRef which gets updated during render
+  const previousGameStateRef = useRef<GameState | undefined>(undefined);
+  
+  // Track if we've already set up the timer for the current DealerTurn session
+  // This is the FINAL DEFENSE against duplicate timers - even if the effect runs multiple times
+  // during the same session, we won't set up multiple timers
+  const timerSetUpForSessionRef = useRef<number>(-1);
+  
   // Track the action being executed so we can reference it in onSuccess (since currentAction state might be stale)
   const executingActionRef = useRef<string | null>(null);
   
@@ -496,9 +514,15 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   // Transaction handler with gas optimization and simulation
   // Memoize callbacks to prevent execute function from changing on every render
   const onSuccess = useCallback(() => {
+    const completedAction = executingActionRef.current;
+    const isDealerAction = completedAction === "dealerHit" || completedAction === "continueDealer";
+    
+    console.log(`✅ TRANSACTION SUCCESS: ${completedAction} (isDealerAction: ${isDealerAction})`);
+    
     // CRITICAL: Use comprehensive refetch after successful transaction
     // This ensures cards appear after VRF completes and cache is invalidated
     setTimeout(() => {
+      console.log(`🔄 onSuccess refetch for ${completedAction}`);
       refetchAllGameData();
     }, 1000);
     
@@ -506,7 +530,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     
     // If we just completed a split action, mark the current hand as recently split
     // Use ref instead of state since state might be stale in this callback
-    if (executingActionRef.current === "split") {
+    if (completedAction === "split") {
       setRecentlySplitHand(0); // Mark that a split just happened
       // Clear this flag after a delay to allow state to refetch
       setTimeout(() => {
@@ -516,9 +540,15 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     
     // Reset dealer hit trigger flag after successful dealerHit or continueDealer
     // This allows the next DealerNeedsToHit event to trigger another dealerHit
-    if (executingActionRef.current === "dealerHit" || executingActionRef.current === "continueDealer") {
+    if (isDealerAction) {
+      console.log(`🎰 Resetting dealer automation flags after ${completedAction} success`);
       dealerHitTriggeredRef.current = false;
       dealerActionInProgressRef.current = false; // Reset so polling can trigger next action
+      
+      // CRITICAL: Do NOT reset dealerAutomationTriggeredRef here!
+      // This flag prevents multiple automation attempts within the same DealerTurn session.
+      // It should only be reset when leaving DealerTurn state, not after each dealer action.
+      // Resetting it here would allow the timer to fire again if the refetch causes a re-render.
     }
     
     setCurrentAction(null); // Clear current action on success
@@ -620,33 +650,30 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     if (wasDealing && !isDealingNow) {
       console.log("🃏 VRF completed! Using COMPREHENSIVE REFETCH...");
       
-      // Use the comprehensive refetch function to ensure UI updates
+      // CRITICAL FIX: Only do ONE refetch, not two!
+      // Multiple refetches were extending the isRefetchingRef window past the 3-second
+      // dealer automation timer, causing race conditions.
       refetchAllGameData();
       
-      // Also do a second wave refetch after a delay for extra safety
-      setTimeout(() => {
-        console.log("🃏 Second wave comprehensive refetch for safety...");
-        refetchAllGameData();
-      }, 1000);
+      // REMOVED: Second wave refetch was causing timing issues
+      // The single comprehensive refetch is sufficient, and avoiding the second
+      // refetch prevents the isRefetchingRef flag from being extended past the
+      // 3-second dealer automation timer.
     }
     
     // Update the ref for next render
     prevDealingState.current = state;
-  }, [state, refetchAllGameData]);
+    // CRITICAL: Remove refetchAllGameData from deps to prevent effect from re-running
+    // when refetch function identity changes. This ensures we only refetch ONCE per
+    // Dealing->DealerTurn transition, preventing phantom transactions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]); // ONLY depend on state
   
-  // Reset dealer hit trigger flag when game state changes
-  useEffect(() => {
-    // Reset when entering DealerTurn (new dealer turn started)
-    // or when leaving DealerTurn (dealer turn ended)
-    const isDealerTurn = state === GameState.DealerTurn;
-    const wasInDealerTurn = dealerHitTriggeredRef.current;
-    
-    if (isDealerTurn && !wasInDealerTurn) {
-      dealerHitTriggeredRef.current = false;
-    } else if (!isDealerTurn && wasInDealerTurn) {
-      dealerHitTriggeredRef.current = false;
-    }
-  }, [state]);
+  // REMOVED: This effect was causing race conditions with dealer automation!
+  // The dealer automation effect already handles resetting all flags when leaving DealerTurn.
+  // This effect was running AFTER the automation effect set up the timer and was resetting
+  // dealerAutomationTriggeredRef.current = false, which allowed the timer to execute
+  // even though automation had already been triggered. This was the source of phantom transactions!
   
   // Create stable hash of dealer cards for dependency tracking
   const dealerCardsHash = dealerCardsFromContract.length > 0 
@@ -1507,6 +1534,10 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     dealerAutomationStateRef.current.stateEnteredAt = Date.now(); // Reset timer
     setSecondsWaiting(0);
     
+    // CRITICAL: Reset automation flag to allow retry
+    console.log("🔄 Resetting dealerAutomationTriggeredRef to allow retry");
+    dealerAutomationTriggeredRef.current = false;
+    
     // CRITICAL: Reset the action in progress flag BEFORE any checks
     // This ensures we're not blocked by stale state from a previous failed transaction
     console.log("🔄 Resetting dealerActionInProgressRef to allow retry");
@@ -1644,40 +1675,93 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
   // FALLBACK: After 3 seconds in DealerTurn with no pending transaction,
   // automatically trigger the appropriate dealer action
   useEffect(() => {
-    console.log(`🎬 DEALER AUTOMATION EFFECT TRIGGERED - state: ${state}`);
+    const effectRunId = Math.random().toString(36).substring(7);
+    const prevState = previousGameStateRef.current;
+    const currentSessionId = dealerTurnSessionIdRef.current;
+    console.log(`🎬 DEALER AUTOMATION EFFECT TRIGGERED [${effectRunId}] - state: ${state}, prevState: ${prevState}, automationTriggered: ${dealerAutomationTriggeredRef.current}, sessionId: ${currentSessionId}, timerSetUp: ${timerSetUpForSessionRef.current === currentSessionId ? 'YES' : 'NO'}`);
     
     // CRITICAL: ONLY run automation when UI is showing "Dealer's Turn"
     if (state !== GameState.DealerTurn) {
       // Reset all flags when leaving DealerTurn
-      if (dealerActionInProgressRef.current) {
+      if (dealerActionInProgressRef.current || prevState === GameState.DealerTurn) {
         console.log("🔄 Left DealerTurn - resetting all dealer automation flags");
         dealerActionInProgressRef.current = false;
         continueDealerTriggeredRef.current = false;
         finalContinueDealerAttemptedRef.current = false;
         lastDealerCardCountRef.current = 0;
+        dealerAutomationTriggeredRef.current = false; // Reset automation flag
+        dealerTurnSessionIdRef.current += 1; // Increment session ID for next DealerTurn
+        timerSetUpForSessionRef.current = -1; // Reset timer tracking
       }
+      
+      // Update previous state ref for next render
+      previousGameStateRef.current = state;
       return;
     }
+    
+    // FIRST DEFENSE: Check if we're TRANSITIONING into DealerTurn or already in DealerTurn
+    // If prevState was already DealerTurn, this is a re-render during the same session - SKIP!
+    const isTransitioningIntoDealerTurn = prevState !== GameState.DealerTurn;
+    
+    if (!isTransitioningIntoDealerTurn) {
+      console.log(`⏸️ Already in DealerTurn session ${currentSessionId} (re-render) - skipping timer setup [${effectRunId}]`);
+      // Update previous state ref for next render
+      previousGameStateRef.current = state;
+      return;
+    }
+    
+    // SECOND DEFENSE: Check if we've already set up a timer for this exact session
+    // This prevents duplicate timers even if the effect somehow runs multiple times
+    // during the transition (e.g., due to rapid refetches)
+    if (timerSetUpForSessionRef.current === currentSessionId) {
+      console.log(`🛡️ DUPLICATE TIMER PREVENTION - Timer already set up for session ${currentSessionId} [${effectRunId}]`);
+      previousGameStateRef.current = state;
+      return;
+    }
+    
+    // Mark that we're setting up a timer for this session
+    timerSetUpForSessionRef.current = currentSessionId;
+    
+    // We're entering a NEW DealerTurn session - this is the TRANSITION from another state to DealerTurn
+    console.log(`✅ NEW DealerTurn session ${currentSessionId} (transitioning from ${prevState ? GameState[prevState] : 'undefined'}) - setting up SINGLE timer [${effectRunId}]`);
     
     // Update refs so setTimeout callback can access latest values
     latestGameStateRef.current = state;
     
-    console.log("⏰ Setting 3-second fallback timer for dealer automation (SINGLE TIMER ON STATE ENTRY)");
+    // Update previous state ref for next render
+    previousGameStateRef.current = state;
+    
+    console.log(`⏰ Setting 3-second fallback timer [${effectRunId}] for dealer automation (SINGLE TIMER ON STATE ENTRY)`);
     
     // CAPTURE these values at the time the effect runs so they're available in the timeout callback
     // This is safe because the timeout is only 3 seconds and these shouldn't change during DealerTurn
     const capturedExecute = execute;
     const capturedHandleApproveLINK = handleApproveLINK;
-    const capturedIsLINKApproved = isLINKApproved;
     const capturedCalculateDealerScore = calculateDealerScore;
+    const capturedSessionId = currentSessionId; // Capture session ID to verify we're in the same session
+    // NOTE: isLINKApproved is NOT captured - we use isLINKApprovedRef.current for fresh value!
     
     const fallbackTimer = setTimeout(() => {
-      console.log("⏰⏰⏰ TIMER FIRED - Checking conditions...");
-      console.log(`⏰ Timer check - state: ${latestGameStateRef.current}, isPending: ${isPendingRef.current}, actionInProgress: ${dealerActionInProgressRef.current}, isRefetching: ${isRefetchingRef.current}`);
+      console.log(`⏰⏰⏰ TIMER FIRED [session ${capturedSessionId}] - Checking conditions...`);
+      
+      // ULTIMATE DEFENSE: Verify we're still in the same DealerTurn session
+      // If the session ID has changed, we've left and re-entered DealerTurn, so cancel this timer
+      if (dealerTurnSessionIdRef.current !== capturedSessionId) {
+        console.log(`🛡️ TIMER CANCELLED - Session changed from ${capturedSessionId} to ${dealerTurnSessionIdRef.current}`);
+        return;
+      }
+      
+      console.log(`⏰ Timer check - state: ${latestGameStateRef.current}, isPending: ${isPendingRef.current}, actionInProgress: ${dealerActionInProgressRef.current}, isRefetching: ${isRefetchingRef.current}, automationTriggered: ${dealerAutomationTriggeredRef.current}`);
       
       // Check if we're still in DealerTurn
       if (latestGameStateRef.current !== GameState.DealerTurn) {
         console.log("⏸️ Fallback automation cancelled - no longer in DealerTurn");
+        return;
+      }
+      
+      // CRITICAL: Check if automation has already been triggered for this DealerTurn session
+      if (dealerAutomationTriggeredRef.current) {
+        console.log("⏸️ Fallback automation cancelled - automation already triggered this session");
         return;
       }
       
@@ -1698,6 +1782,9 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       
       console.log("⏰ FALLBACK AUTOMATION TRIGGERED (3 seconds elapsed)");
       
+      // Mark automation as triggered for this DealerTurn session
+      dealerAutomationTriggeredRef.current = true;
+      
       // Mark action as in progress AFTER checks pass
       dealerActionInProgressRef.current = true;
       
@@ -1706,9 +1793,10 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
       const freshDealerCards = latestDealerCardsRef.current;
       const freshDealerScore = capturedCalculateDealerScore(freshDealerCards);
       const freshHoleCardRevealed = latestHoleCardRevealedRef.current;
+      const freshIsLINKApproved = isLINKApprovedRef.current; // CRITICAL: Use ref for fresh value!
       
       console.log(`🤖 Fallback dealer state - cards: ${freshDealerCards.length}, score: ${freshDealerScore}, holeCardRevealed: ${freshHoleCardRevealed}`);
-      console.log(`🤖 Captured values - isLINKApproved: ${capturedIsLINKApproved}`);
+      console.log(`🤖 Fresh values - isLINKApproved: ${freshIsLINKApproved}`);
       
       // Determine which action to take
       if (freshDealerCards.length < 2) {
@@ -1719,10 +1807,11 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
         capturedExecute("continueDealer");
       } else if (freshDealerScore < 17) {
         console.log(`⏰ Fallback: Dealer score ${freshDealerScore} < 17 - calling dealerHit`);
-        if (!capturedIsLINKApproved) {
+        if (!freshIsLINKApproved) {
           console.log("⚠️ Fallback: LINK not approved - triggering approval flow");
           capturedHandleApproveLINK("dealerHit");
           dealerActionInProgressRef.current = false; // Reset since we're not executing
+          dealerAutomationTriggeredRef.current = false; // Reset so user can retry
           return;
         }
         capturedExecute("dealerHit");
@@ -1734,7 +1823,7 @@ export function GamePlay({ gameAddress, onMinimize }: GamePlayProps) {
     
     // Cleanup timer when effect re-runs or component unmounts
     return () => {
-      console.log("🧹 Cleaning up fallback timer - effect is re-running or component unmounting");
+      console.log(`🧹 Cleaning up fallback timer [${effectRunId}] - effect is re-running or component unmounting`);
       clearTimeout(fallbackTimer);
     };
     

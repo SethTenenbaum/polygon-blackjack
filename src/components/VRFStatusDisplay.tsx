@@ -15,6 +15,8 @@ export function VRFStatusDisplay({ gameAddress }: VRFStatusDisplayProps) {
   const [hasAttemptedAutoRetry, setHasAttemptedAutoRetry] = useState(false);
   const lastSeenRequestIdRef = useRef<bigint>(BigInt(0));
 
+  console.log("🎬 VRFStatusDisplay RENDER - gameAddress:", gameAddress, "vrfStatus:", vrfStatus);
+
   const { 
     writeContract: retryVRF, 
     data: retryTxHash, 
@@ -70,33 +72,39 @@ export function VRFStatusDisplay({ gameAddress }: VRFStatusDisplayProps) {
   }, [vrfStatus.lastRequestId, vrfStatus.timeRemaining, hasAttemptedAutoRetry]); // All dependencies present from start
 
   const handleRetry = useCallback(async () => {
+    console.log("🔄🔄🔄 VRF RETRY TRIGGERED - VRFStatusDisplay.handleRetry called");
+    console.log("🔄 Game address:", gameAddress);
+    console.log("🔄 VRF status:", vrfStatus);
     try {
       setError(null);
+      console.log("🔄 Calling retryVRFRequest on contract...");
       retryVRF({
         address: gameAddress,
         abi: GAME_ABI,
         functionName: "retryVRFRequest",
         gas: BigInt(800000), // Higher gas limit for external call to factory + VRF coordinator
       });
+      console.log("✅ retryVRFRequest transaction submitted");
     } catch (err) {
+      console.error("❌ VRF retry failed:", err);
       setError("Failed to initiate retry");
     }
-  }, [gameAddress, retryVRF]);
+  }, [gameAddress, retryVRF, vrfStatus]);
 
-  // Automatic retry when local countdown reaches 0
-  // The contract doesn't proactively detect timeouts - we need to call retryVRFRequest()
-  // when the client-side countdown expires to trigger a new VRF request.
+  // DISABLED: Automatic retry when local countdown reaches 0
+  // This was causing phantom transactions during normal VRF processing
+  // Users can manually retry if needed via the button in the UI
   useEffect(() => {
     const timeRemainingNumber = Number(vrfStatus.timeRemaining);
     const isWaiting = vrfStatus.isWaitingForVRF;
 
-    // Trigger retry when local countdown reaches 0
-    // This calls retryVRFRequest() on the contract to initiate a new VRF request
-    if (isWaiting && timeRemainingNumber === 0 && !hasAttemptedAutoRetry && !isRetrying) {
-      setHasAttemptedAutoRetry(true);
-      handleRetry();
+    console.log("🕐 VRF countdown check - timeRemaining:", timeRemainingNumber, "isWaiting:", isWaiting);
+
+    // AUTO-RETRY DISABLED - show manual retry button instead
+    if (isWaiting && timeRemainingNumber === 0) {
+      console.log("⏰ VRF countdown reached 0 - showing manual retry button");
     }
-  }, [vrfStatus.timeRemaining, vrfStatus.isWaitingForVRF, hasAttemptedAutoRetry, isRetrying, handleRetry]);
+  }, [vrfStatus.timeRemaining, vrfStatus.isWaitingForVRF]);
 
   // Don't show anything if not waiting for VRF (hide immediately when VRF completes)
   // This prevents showing "Retrying automatically..." after VRF fulfillment
