@@ -45,7 +45,7 @@ export function useGameTransaction({
       // 1. Estimate gas for the transaction (with fallback if it fails)
       let contractGasFee: bigint;
       try {
-        contractGasFee = await estimateGas(config, {
+        const baseGasEstimate = await estimateGas(config, {
           to: gameAddress,
           data: encodeFunctionData({
             abi,
@@ -55,6 +55,10 @@ export function useGameTransaction({
           account: address,
           ...(value ? { value } : {}),
         });
+        
+        // Add buffer: 50% for doubleDown (more operations), 20% for others
+        const gasMultiplier = functionName === 'doubleDown' ? 1.5 : 1.2;
+        contractGasFee = (baseGasEstimate * BigInt(Math.floor(gasMultiplier * 100))) / BigInt(100);
       } catch (gasError: any) {
         // Re-throw the error so we can see what's actually wrong
         throw gasError;
