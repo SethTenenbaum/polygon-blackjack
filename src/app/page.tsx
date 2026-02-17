@@ -1,6 +1,6 @@
 "use client";
 
-import { ConnectWallet } from "@/components/ConnectWallet";
+import { WalletDropdown } from "@/components/WalletDropdown";
 import { BuyTokens } from "@/components/BuyTokens";
 import { CreateGame } from "@/components/CreateGame";
 import { PlayerGames, SelectedGameDisplay } from "@/components/PlayerGames";
@@ -10,7 +10,7 @@ export default function Home() {
   return (
     <main className="min-h-screen p-8">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
+        {/* Header with Wallet Dropdown in Top Right */}
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-4xl font-bold mb-2">Blackjack on Polygon Amoy</h1>
@@ -18,7 +18,7 @@ export default function Home() {
               Play blackjack with verifiable randomness on-chain
             </p>
           </div>
-          <ConnectWallet />
+          <WalletDropdown />
         </div>
 
         {/* Main Content */}

@@ -292,8 +292,20 @@ export function CreateGame() {
 
   return (
     <div className="card">
-      <h2 className="text-2xl font-bold mb-4">🎮 Create New Game</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold">🎮 Create New Game</h2>
+      </div>
       
+      {!address ? (
+        /* NOT CONNECTED - Show message */
+        <div className="text-center py-12">
+          <p className="text-gray-500 dark:text-gray-400 mb-4">
+            Please connect your wallet to create a game
+          </p>
+        </div>
+      ) : (
+        /* CONNECTED - Show game creation form */
+        <>
       {/* Network Status Display */}
       {address && (
         <div className={`mb-4 p-3 rounded-lg border ${
@@ -499,6 +511,8 @@ export function CreateGame() {
         <p className="mt-4 text-red-600 dark:text-red-400">
           Error: {gameTransaction.error?.message || approvalTransaction.error?.message || linkApprovalTransaction.error?.message}
         </p>
+      )}
+        </>
       )}
     </div>
   );
